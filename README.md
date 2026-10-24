@@ -9,6 +9,7 @@ Godot 4.5.1로 만든 Windows용 탑다운 도트 액션 로그라이트 데모�
 - **`start_game.cmd`를 더블클릭**하거나 `build\EmberSanctuary.exe`를 실행하세요.
 - 별도의 Godot 설치나 인터넷 연결 없이 실행됩니다.
 - 실행 파일과 같은 위치의 `EmberSanctuary.pck`는 함께 보관해야 합니다.
+- 배포용 단일 EXE와 배포 ZIP은 `build\release\EmberSanctuary.exe` 및 `build\EmberSanctuary-Windows-x64.zip`입니다. 배포용 EXE에는 게임 데이터가 포함되어 별도 PCK가 필요 없습니다.
 - Windows 64비트, OpenGL 3.3 호환 그래픽 환경이 필요합니다.
 - 기본 창 크기는 1280×720, 최소 크기는 960×540입니다. 화면 비율을 유지합니다.
 - 키보드와 마우스용 데모입니다. 게임패드와 모바일 터치 조작은 제공하지 않습니다.
@@ -92,15 +93,21 @@ Windows 기본 위치는 `%APPDATA%\Godot\app_userdata\` 아래의 게임 이름
 - `scripts\sound.gd`: 짧은 효과음 합성 및 재생
 - `tests\integration.gd`: 실제 뷰포트 마우스·키보드 입력과 저장 왕복 테스트
 - `main.tscn`: 시작 씬
-- `export_presets.cfg`: Windows 리소스 팩 내보내기 설정
+- `export_presets.cfg`: 개발용 리소스 팩과 배포용 Windows 프리셋
 
-동봉 실행 파일은 공식 Godot 편집기 바이너리를 활용하므로 일반적인 최적화 릴리스보다 큽니다.
-소스 수정 후에는 아래 명령으로 실행용 리소스 팩을 갱신하세요.
-별도 배포를 최적화하려면 Godot 공식 Windows 내보내기 템플릿을 설치하고 Windows Desktop 프리셋을 사용하세요.
+개발용 편집기는 `runtime`에 동봉되어 있습니다. 편집기에서 편리하게 수정할 수 있지만, 최종 배포에는 별도의 최적화된 Godot 릴리스 템플릿을 사용합니다.
+`Windows Release`를 내보내려면 해당 컴퓨터에 동일한 Godot 버전의 공식 Windows export template이 설치되어 있어야 합니다.
+아래 명령은 자동 코드 서명하지 않으며, 내보낸 EXE를 사용자가 최종 실행 전에 시험할 책임이 있습니다.
 
 ```powershell
 # 프로젝트 폴더에서 실행
 & '.\runtime\Godot_v4.5.1-stable_win64_console.exe' --headless --editor --path '.' --export-pack 'Windows Desktop' '.\build\EmberSanctuary.pck'
+
+# 최종 배포용 단일 EXE 재생성
+& '.\runtime\Godot_v4.5.1-stable_win64_console.exe' --headless --path '.' --export-release 'Windows Release' '.\build\release\EmberSanctuary.exe'
+
+# EXE 및 배포 고지를 ZIP으로 묶기
+Compress-Archive -Path '.\build\release\EmberSanctuary.exe','.\build\release\README.txt','.\build\release\GODOT_LICENSE.txt','.\build\release\GODOT_COPYRIGHT.txt' -DestinationPath '.\build\EmberSanctuary-Windows-x64.zip' -CompressionLevel Optimal -Force
 
 # 소스 프로젝트의 전투 로직 테스트
 & '.\runtime\Godot_v4.5.1-stable_win64_console.exe' --headless --path '.' --quit-after 1200 -- --self-test
