@@ -56,9 +56,9 @@ func movement(unit: Dictionary) -> float:
 	if unit.slow_immune:
 		return 1.0
 	if active(unit, "동토"):
-		return 0.6
+		return 0.8 if unit.cc_immune else 0.6
 	if active(unit, "진창"):
-		return 0.7
+		return 0.8 if unit.cc_immune else 0.7
 	if active(unit, "제어저항"):
 		return 0.8
 	return 1.0
@@ -83,6 +83,8 @@ func control(unit: Dictionary, name: String, duration: float) -> void:
 	unit.control_until = clock + duration + 3
 
 func knock(unit: Dictionary, direction: Vector2, force: float) -> void:
+	if unit.get("augment_knock_immune", false):
+		return
 	if unit.cc_immune or clock < unit.knock_until:
 		if not unit.slow_immune:
 			status(unit, "제어저항", 2)
@@ -93,7 +95,7 @@ func knock(unit: Dictionary, direction: Vector2, force: float) -> void:
 func grant_shield(unit: Dictionary, amount: float, duration: float) -> void:
 	if unit.shield_until <= clock:
 		unit.shield = 0.0
-	unit.shield = maxf(unit.shield, amount)
+	unit.shield = minf(unit.get("max_hp", INF) * 0.5, maxf(unit.shield, amount))
 	unit.shield_until = clock + duration
 
 func absorb(unit: Dictionary, damage: float) -> float:

@@ -2,12 +2,19 @@ extends Node2D
 
 const Art = preload("res://scripts/pixel_art.gd")
 const ForestArt = preload("res://scripts/forest_art.gd")
+const SanctuaryArt = preload("res://scripts/sanctuary_art.gd")
+const ReferenceArt = preload("res://scripts/reference_art.gd")
+const SanctuaryFrame = preload("res://scripts/sanctuary_frame.gd")
+const TerrainChart = preload("res://scripts/terrain_chart.gd")
 const Sound = preload("res://scripts/sound.gd")
 const Augments = preload("res://scripts/augments.gd")
 const Elements = preload("res://scripts/elements.gd")
 const ForestMaps = preload("res://scripts/forest_maps.gd")
 const RarityEffect = preload("res://scripts/rarity_effect.gd")
 const IntegrationTests = preload("res://tests/integration.gd")
+const DeityTests = preload("res://tests/deity_test.gd")
+const TerrainTests = preload("res://tests/terrain_test.gd")
+const DeityCombat = preload("res://scripts/deity_combat.gd")
 const GOLD = Color("#f4c675")
 const PAPER = Color("#f7edd2")
 const MINT = Color("#82cbb2")
@@ -15,15 +22,17 @@ const RED = Color("#ed927e")
 const MUTED = Color("#a9c1b5")
 const SAVE_PATH = "user://sanctuary_save.json"
 const ARENA = Rect2(64, 128, 1376, 832)
-const PORTAL = Vector2(752, 148)
-const ALTAR = Vector2(752, 515)
-const WEST_GATE = Vector2(88, 544)
-const EAST_GATE = Vector2(1416, 544)
+var PORTAL = Vector2(752, 148)
+var ALTAR = Vector2(752, 515)
+var WEST_GATE = Vector2(88, 544)
+var EAST_GATE = Vector2(1416, 544)
 const GROUND_X = Vector2(0.86, 0.43)
 const GROUND_Y = Vector2(-0.86, 0.43)
 var augment_data = Augments.catalog()
 
 var sprites: Dictionary
+var sanctuary_assets: Dictionary
+var reference_assets: Dictionary
 var font: SystemFont
 var sound: Node
 var ui: CanvasLayer
@@ -66,6 +75,11 @@ var hero: Dictionary = {}
 var room_layout = 0
 var layout_bag: Array[int] = []
 var room_paths: Array = []
+var terrain: Dictionary = {}
+var forest_boundary: Dictionary = {}
+var boundary_props: Array = []
+var room_decorations: Array = []
+var room_entry = Vector2.ZERO
 var reward_ranks: Array[int] = []
 var settings_return = "pause"
 var build_return = "playing"
@@ -90,6 +104,7 @@ var shake = 0.0
 var slash_time = 0.0
 var slash_angle = 0.0
 var slash_heavy = false
+var slash_action = "light"
 var enemies: Array = []
 var projectiles: Array = []
 var particles: Array = []
@@ -131,11 +146,29 @@ var navigation = AStarGrid2D.new()
 var reward_deferred = false
 var forest_trees: Array[Vector2] = []
 var pointer_position = Vector2(480, 300)
+var deity = DeityCombat.new(self)
+var augment_levels: Dictionary = {}
+var augment_xp: Dictionary = {}
+var registered_deities: Array = []
+var offer_pity: Dictionary = {}
+var core_slots: Dictionary = {}
+var active_augments: Dictionary = {}
+var heavy_cd = 0.0
+var queued_action = ""
+var queued_action_time = 0.0
+var reward_age = 0.0
+var reward_ready = false
+var reward_neutral_time = 0.0
+var reward_hint: Label
+var reward_cards: Array[Control] = []
+var reward_keys: Dictionary = {}
 
 func _ready() -> void:
 	rng.randomize()
 	get_tree().auto_accept_quit = false
 	sprites = Art.create_sprites()
+	sanctuary_assets = SanctuaryArt.load_assets()
+	reference_assets = ReferenceArt.load_assets()
 	font = SystemFont.new()
 	font.font_names = PackedStringArray(["Malgun Gothic", "Noto Sans CJK KR", "Arial"])
 	sound = Sound.new()
@@ -146,7 +179,9 @@ func _ready() -> void:
 	add_child(ui)
 	var args = OS.get_cmdline_user_args()
 	testing = "--self-test" in args
+	testing = testing or "--deity-test" in args
 	testing = testing or "--ui-test" in args or "--overhaul-test" in args or "--combat-test" in args or "--quarter-test" in args
+	testing = testing or "--terrain-test" in args
 	if testing:
 		sound.set_muted(true)
 	if not testing:
@@ -156,16 +191,16 @@ func _ready() -> void:
 		sound.start_music()
 	_setup_input()
 	_show_hub()
-	if "--self-test" in args:
-		call_deferred("_self_test")
+	if "--self-test" in args or "--overhaul-test" in args or "--deity-test" in args:
+		DeityTests.run.call_deferred(self)
 	if "--ui-test" in args:
 		IntegrationTests.run.call_deferred(self)
-	if "--overhaul-test" in args:
-		IntegrationTests.overhaul.call_deferred(self)
 	if "--combat-test" in args:
 		IntegrationTests.combat_run.call_deferred(self)
 	if "--quarter-test" in args:
 		IntegrationTests.quarter_view.call_deferred(self)
+	if "--terrain-test" in args:
+		TerrainTests.run.call_deferred(self)
 	if "--quit-test" in args:
 		IntegrationTests.quit_test.call_deferred(self)
 	for arg in args:
@@ -187,40 +222,49 @@ func _ready() -> void:
 			facing = Vector2.UP
 		elif arg == "--capture-scene=action":
 			showcase = true
-			player = Vector2(640, 520)
+			layout_bag.assign([4])
+			_enter_room(0, "battle")
+			player = ALTAR
 			camera_position = player
 			facing = Vector2.RIGHT
 			mouse_aim = false
 			invulnerable = 0
 			enemies.clear()
-			_spawn_enemy("brute", player + Vector2(65, 0))
-			_spawn_enemy("archer", player + Vector2(200, -110))
-			_spawn_enemy("crawler", player + Vector2(80, 85))
-			_apply_augment("불0", 2)
-			_apply_augment("불1", 3)
-			_apply_augment("불2", 4)
+			_spawn_enemy("brute", player + Vector2(65, -40))
+			_spawn_enemy("archer", player + Vector2(180, -110))
+			_spawn_enemy("crawler", player + Vector2(-65, 60))
+			_apply_augment("F01", 2)
+			_apply_augment("W02", 2)
+			_apply_augment("A03", 1)
 		elif arg == "--capture-scene=inventory":
-			for i in 6:
-				_apply_augment("불" + str(i), i)
+			for id in ["F01", "F02", "F03", "F04", "F05", "F06"]:
+				_apply_augment(id, 1)
 			_show_inventory()
 		elif arg == "--capture-scene=settings":
 			_show_settings()
+		elif arg == "--capture-scene=codex":
+			_show_codex("hub")
+		elif arg == "--capture-scene=contracts":
+			room_clear = true
+			toast_time = 0
+			invulnerable = 0
+			_show_contracts()
 		elif arg == "--capture-scene=forest":
-			player = ALTAR + Vector2(120, 120)
+			player = _nearest_floor(ALTAR + Vector2(60, 60), 12)
 			camera_position = player
 			invulnerable = 0
 			mouse_aim = false
-			facing = Vector2(-1, -1).normalized()
+			facing = Vector2(1, 1).normalized()
 			for i in enemies.size():
 				enemies[i].pos = _move_actor(player + Vector2(-260 + i * 170, -260), Vector2.ZERO, 20)
 		elif arg == "--capture-scene=rest":
 			_enter_room(3, "rest")
-			player = ALTAR + Vector2(90, 90)
+			player = _nearest_floor(ALTAR + Vector2(60, 60), 12)
 			camera_position = player
 			mouse_aim = false
 		elif arg == "--capture-scene=shop":
 			_enter_room(3, "shop")
-			player = ALTAR + Vector2(90, 90)
+			player = _nearest_floor(ALTAR + Vector2(60, 60), 12)
 			camera_position = player
 			mouse_aim = false
 	for arg in args:
@@ -229,20 +273,31 @@ func _ready() -> void:
 			assert(index >= 0 and index < 5)
 			layout_bag.assign([index])
 			_enter_room(0, "battle")
-			player = ALTAR + Vector2(60, 70)
+			player = _nearest_floor(ALTAR + Vector2(30, 30), 12)
 			camera_position = player
 			invulnerable = 999
 		if arg.begins_with("--capture-rarity="):
 			var rank = int(arg.trim_prefix("--capture-rarity="))
 			for i in offered.size():
-				offered[i].rarity = (rank + i) % 6
+				offered[i].rarity = (rank + i) % Augments.RARITIES.size()
 			_offer_relics(false)
+	for arg in args:
+		if arg == "--capture-focus=bridge":
+			var bridge: Rect2i = ForestMaps.DEFINITIONS[room_layout].bridge
+			player = _nearest_floor(ForestMaps.center(Vector2i(bridge.get_center())), 12)
+			camera_position = player
+			enemies.clear()
+			room_clear = true
+			mouse_aim = false
+			facing = Vector2.RIGHT
+		elif arg == "--capture-focus=map":
+			_show_map()
 
 func _setup_input() -> void:
 	var mapping = {
 		"move_left": [KEY_A, KEY_LEFT], "move_right": [KEY_D, KEY_RIGHT],
 		"move_up": [KEY_W, KEY_UP], "move_down": [KEY_S, KEY_DOWN],
-		"slash": [KEY_J], "skill": [KEY_Q, KEY_K], "dash": [KEY_SPACE],
+		"slash": [KEY_J], "heavy": [KEY_K], "skill": [KEY_Q], "power": [KEY_R], "dash": [KEY_SPACE],
 		"interact": [KEY_E], "flask": [KEY_F]
 	}
 	for action in mapping:
@@ -252,7 +307,7 @@ func _setup_input() -> void:
 			var event = InputEventKey.new()
 			event.physical_keycode = key
 			InputMap.action_add_event(action, event)
-	for pair in [["slash", MOUSE_BUTTON_LEFT], ["skill", MOUSE_BUTTON_RIGHT]]:
+	for pair in [["slash", MOUSE_BUTTON_LEFT], ["heavy", MOUSE_BUTTON_RIGHT]]:
 		var event = InputEventMouseButton.new()
 		event.button_index = pair[1]
 		InputMap.action_add_event(pair[0], event)
@@ -326,6 +381,13 @@ func _start_run() -> void:
 	skill_duration = 5.5
 	dash_duration = 1.0
 	augments.clear()
+	augment_levels.clear()
+	augment_xp.clear()
+	registered_deities.clear()
+	offer_pity.clear()
+	core_slots.clear()
+	active_augments.clear()
+	deity.reset()
 	tag_counts.clear()
 	flat_bonuses.clear()
 	element_lock = ""
@@ -367,6 +429,8 @@ func _enter_room(next_depth: int, kind: String) -> void:
 	trails.clear()
 	impacts.clear()
 	pending_strike.clear()
+	queued_action = ""
+	queued_action_time = 0
 	attack_buffer = 0
 	rerolls = 1
 	reward_deferred = false
@@ -376,9 +440,10 @@ func _enter_room(next_depth: int, kind: String) -> void:
 	visited[depth] = kind
 	attack_cd = 0.2
 	skill_cd = 0.0
+	heavy_cd = 0.0
 	dash_cd = 0.0
 	dash_time = 0.0
-	dash_charges = 2
+	dash_charges = deity.max_dashes()
 	invulnerable = 1.0
 	combo = 0
 	combo_timer = 0.0
@@ -393,6 +458,7 @@ func _enter_room(next_depth: int, kind: String) -> void:
 	hero.control_until = 0.0
 	hero.knock_until = 0.0
 	hero.knock = Vector2.ZERO
+	hero["augment_knock_immune"] = false
 	second_burst.clear()
 	if layout_bag.is_empty():
 		for i in 5:
@@ -401,35 +467,52 @@ func _enter_room(next_depth: int, kind: String) -> void:
 		_shuffle(layout_bag)
 		layout_bag.push_front(room_layout)
 	room_layout = layout_bag.pop_back()
-	var layout = ForestMaps.layout(room_layout)
-	structures.assign(layout.rocks)
-	obstacles.assign(layout.trees)
-	room_paths = layout.paths
-	_build_forest_border()
+	_apply_layout(room_layout)
+	player = room_entry
+	camera_position = player
+	hero.pos = player
 	_close_overlay()
 	state = "playing"
 	if kind == "battle" or kind == "elite":
 		var count = 4 + mini(depth, 4)
+		var spawn_cells: Array = []
+		for cell in terrain:
+			var at = ForestMaps.center(cell)
+			if _spawn_clear(at) and at.distance_to(player) > 190:
+				spawn_cells.append(at)
+		_shuffle(spawn_cells)
 		for i in count:
 			var enemy_kind = "crawler"
 			if i % 3 == 1 and depth > 0:
 				enemy_kind = "archer"
 			if i % 4 == 3 and depth > 1:
 				enemy_kind = "brute"
-			_spawn_enemy(enemy_kind, Vector2(420 + i * 157 % 690, 430 + (i % 3) * 112), kind == "elite")
+			_spawn_enemy(enemy_kind, spawn_cells[i % spawn_cells.size()], kind == "elite")
 	elif kind == "boss":
 		_spawn_enemy("boss", ALTAR)
+	deity.enter_room(kind in ["battle", "elite", "boss"])
 	for i in 12:
 		var pos = Vector2(165 + (i * 131 + depth * 57) % 1150, 260 + (i * 163) % 590)
-		var inside_wall = false
-		for structure in structures:
-			inside_wall = inside_wall or structure.grow(25).has_point(pos)
-		for obstacle in obstacles:
-			inside_wall = inside_wall or obstacle.distance_to(pos) < 40
-		if not inside_wall and pos.distance_to(player) > 80 and pos.distance_to(ALTAR) > 90:
+		if _spawn_clear(pos) and pos.distance_to(player) > 80 and pos.distance_to(ALTAR) > 90:
 			breakables.append({"pos": pos, "hp": 14.0, "kind": "crate" if i % 3 else "urn"})
 	_rebuild_navigation()
 	_notify(_room_title() + "  |  " + _room_objective())
+
+func _apply_layout(index: int) -> void:
+	room_layout = index
+	var layout = ForestMaps.layout(index)
+	terrain = layout.cells
+	forest_boundary = layout.boundary
+	structures.assign(layout.rocks)
+	obstacles.assign(layout.trees)
+	room_paths = layout.paths
+	room_decorations = layout.decorations
+	room_entry = layout.entry
+	ALTAR = layout.altar
+	PORTAL = layout.gates[0]
+	WEST_GATE = layout.gates[1]
+	EAST_GATE = layout.gates[2]
+	_build_forest_border()
 
 func _spawn_enemy(kind: String, pos: Vector2, elite: bool = false) -> Dictionary:
 	var base_hp = {"crawler": 42.0, "archer": 36.0, "brute": 90.0, "boss": 720.0}[kind]
@@ -442,7 +525,7 @@ func _spawn_enemy(kind: String, pos: Vector2, elite: bool = false) -> Dictionary
 		"cooldown": rng.randf_range(0.7, 1.6), "windup": 0.0,
 		"target": player, "flash": 0.0,
 		"knock": Vector2.ZERO, "elite": elite, "phase": 0, "attack_index": 0,
-		"stagger": 0.0, "wall_hit": false, "alert": false
+		"stagger": 0.0, "wall_hit": false, "alert": false, "moving": false
 	}
 	elemental.prepare(enemy, Elements.NAMES[(depth * 3 + enemies.size()) % Elements.NAMES.size()], 1, kind == "boss")
 	enemies.append(enemy)
@@ -465,6 +548,8 @@ func _safe_spawn(pos: Vector2) -> Vector2:
 	return nearest
 
 func _spawn_clear(pos: Vector2) -> bool:
+	if not ForestMaps.walkable(terrain, pos, 32):
+		return false
 	for rect in structures:
 		if rect.grow(32).has_point(pos):
 			return false
@@ -476,12 +561,16 @@ func _spawn_clear(pos: Vector2) -> bool:
 func _process(delta: float) -> void:
 	time += delta
 	toast_time = maxf(0.0, toast_time - delta)
+	if state == "reward":
+		_tick_reward_intro(delta)
 	if state == "playing":
 		run_time += delta
 		if hit_stop > 0.0:
 			hit_stop -= delta
 		else:
 			_tick_player(delta)
+			if state == "playing":
+				deity.tick(delta)
 			if state == "playing":
 				_apply_element_events(elemental.tick(delta, _units()))
 			if state == "playing":
@@ -491,7 +580,8 @@ func _process(delta: float) -> void:
 					if second_burst.timer <= 0:
 						_element_burst(second_burst.radius, second_burst.damage)
 						second_burst.clear()
-				_tick_enemies(delta)
+				if not (auto_capture and showcase):
+					_tick_enemies(delta)
 				if state == "playing":
 					_tick_projectiles(delta)
 				if state == "playing":
@@ -505,7 +595,7 @@ func _process(delta: float) -> void:
 	queue_redraw()
 	if auto_capture:
 		capture_frames += 1
-		if capture_frames == 52 and showcase:
+		if capture_frames == 97 and showcase:
 			attack_cd = 0
 			combo = 2
 			_attack(false)
@@ -515,7 +605,9 @@ func _process(delta: float) -> void:
 			for enemy in enemies:
 				if enemy.pos.distance_to(player) < 130:
 					enemy.flash = 0.1
-		if capture_frames == 55:
+		if capture_frames == 100:
+			if state == "reward":
+				_tick_reward_intro(2)
 			await RenderingServer.frame_post_draw
 			var error = get_viewport().get_texture().get_image().save_png(capture_path)
 			print("CAPTURE_RESULT=", error)
@@ -524,12 +616,13 @@ func _process(delta: float) -> void:
 func _tick_player(delta: float) -> void:
 	var action_speed: float = elemental.action_speed(hero)
 	attack_cd = maxf(0, attack_cd - delta * action_speed)
+	heavy_cd = maxf(0, heavy_cd - delta * action_speed)
 	skill_cd = maxf(0, skill_cd - delta * action_speed)
-	if dash_charges < 2:
+	if dash_charges < deity.max_dashes():
 		dash_cd = maxf(0, dash_cd - delta)
 		if dash_cd <= 0:
 			dash_charges += 1
-			dash_cd = dash_duration if dash_charges < 2 else 0
+			dash_cd = dash_duration if dash_charges < deity.max_dashes() else 0
 	invulnerable = maxf(0, invulnerable - delta)
 	combo_timer = maxf(0, combo_timer - delta)
 	if combo_timer <= 0:
@@ -537,6 +630,8 @@ func _tick_player(delta: float) -> void:
 	if action_speed <= 0:
 		dash_time = 0
 		pending_strike.clear()
+		queued_action = ""
+		hero["augment_knock_immune"] = false
 		return
 	if elemental.movement(hero) == 0:
 		dash_time = 0
@@ -560,21 +655,31 @@ func _tick_player(delta: float) -> void:
 		dash_time -= delta
 		player = _move_actor(player, dash_vector * 620.0 * delta, 12)
 		trails.append({"pos": player, "life": 0.17})
-		if _tier("이동속도") >= 3:
-			for enemy in enemies:
-				if enemy.hp > 0 and enemy.pos.distance_to(player) < 45:
-					_hit_enemy(enemy, delta * attack_power * (4 if _tier("이동속도") == 4 else 2))
+		deity.dash_path(delta)
+		if dash_time <= 0:
+			deity.dash_end()
 		if Input.is_action_pressed("slash") and attack_cd <= 0:
 			_attack(false)
 	else:
 		var speed_multiplier = 0.72 if not pending_strike.is_empty() else 1.0
-		player = _move_actor(player, movement * move_speed * speed_multiplier * delta + (recoil + hero.knock) * delta, 12)
+		player = _move_actor(player, movement * deity.speed() * speed_multiplier * delta + (recoil + hero.knock) * delta, 12)
 		hero.knock = hero.knock.move_toward(Vector2.ZERO, delta * 650)
 		recoil = recoil.move_toward(Vector2.ZERO, delta * 1200)
-		if (Input.is_action_pressed("slash") or attack_buffer > 0) and attack_cd <= 0:
-			_attack(false)
 		if Input.is_action_just_pressed("skill") and skill_cd <= 0:
 			_attack(true)
+		elif Input.is_action_just_pressed("heavy") and heavy_cd <= 0:
+			_begin_action("heavy")
+		elif not queued_action.is_empty() and queued_action_time > 0 and pending_strike.is_empty():
+			var action = queued_action
+			queued_action = ""
+			_begin_action(action)
+		elif (Input.is_action_pressed("slash") or attack_buffer > 0) and attack_cd <= 0:
+			_attack(false)
+	queued_action_time = maxf(0, queued_action_time - delta)
+	if queued_action_time <= 0:
+		queued_action = ""
+	if Input.is_action_just_pressed("power"):
+		deity.use_power()
 	if Input.is_action_just_pressed("flask"):
 		_use_flask()
 	if Input.is_action_just_pressed("interact"):
@@ -582,35 +687,49 @@ func _tick_player(delta: float) -> void:
 
 func _move_actor(pos: Vector2, movement: Vector2, radius: float) -> Vector2:
 	var steps = maxi(1, ceili(movement.length() / 12))
-	var result = pos
+	var result = pos if _actor_clear(pos, radius) else _nearest_floor(pos, radius)
 	for step in steps:
-		result = _slide_actor(result + movement / steps, radius)
+		var offset = movement / steps
+		if _actor_clear(result + offset, radius):
+			result += offset
+		else:
+			if _actor_clear(result + Vector2(offset.x, 0), radius):
+				result.x += offset.x
+			if _actor_clear(result + Vector2(0, offset.y), radius):
+				result.y += offset.y
 	return result
 
-func _slide_actor(pos: Vector2, radius: float) -> Vector2:
-	var result = pos
-	result.x = clampf(result.x, ARENA.position.x + radius, ARENA.end.x - radius)
-	result.y = clampf(result.y, ARENA.position.y + radius, ARENA.end.y - radius)
+func _actor_clear(pos: Vector2, radius: float) -> bool:
+	if not ForestMaps.walkable(terrain, pos, radius):
+		return false
 	for obstacle in obstacles:
-		var diff = result - obstacle
-		var minimum = 19.0 + radius
-		if diff.length() < minimum:
-			result = obstacle + diff.normalized() * minimum if diff.length() > 0.001 else obstacle + Vector2(minimum, 0)
+		if pos.distance_to(obstacle) < 19.0 + radius:
+			return false
 	for structure in structures:
-		var expanded = structure.grow(radius)
-		if not expanded.has_point(result):
-			continue
-		var candidates = [Vector2(expanded.position.x - 0.1, result.y), Vector2(expanded.end.x + 0.1, result.y),
-			Vector2(result.x, expanded.position.y - 0.1), Vector2(result.x, expanded.end.y + 0.1)]
-		var nearest: Vector2 = result
-		var distance = INF
-		for candidate in candidates:
-			if ARENA.grow(-radius).has_point(candidate) and candidate.distance_squared_to(result) < distance:
-				distance = candidate.distance_squared_to(result)
-				nearest = candidate
-		assert(distance < INF, "지형 충돌 해소에 실패했습니다.")
-		result = nearest
-	return result
+		if structure.grow(radius).has_point(pos):
+			return false
+	return true
+
+func _nearest_floor(pos: Vector2, radius: float) -> Vector2:
+	var nearest = pos
+	var distance = INF
+	for cell in terrain:
+		var candidate = ForestMaps.center(cell)
+		if candidate.distance_squared_to(pos) < distance and _actor_clear(candidate, radius):
+			nearest = candidate
+			distance = candidate.distance_squared_to(pos)
+	assert(distance < INF, "이동 가능한 지형을 찾지 못했습니다.")
+	return nearest
+
+func _slide_actor(pos: Vector2, radius: float) -> Vector2:
+	return pos if _actor_clear(pos, radius) else _nearest_floor(pos, radius)
+
+func _ground_line_clear(start: Vector2, end: Vector2, radius: float = 0) -> bool:
+	var steps = maxi(1, ceili(start.distance_to(end) / 12))
+	for i in range(steps + 1):
+		if not _actor_clear(start.lerp(end, i / float(steps)), radius):
+			return false
+	return true
 
 func _rebuild_navigation() -> void:
 	navigation.region = Rect2i(0, 0, 43, 26)
@@ -621,7 +740,7 @@ func _rebuild_navigation() -> void:
 	for y in 26:
 		for x in 43:
 			var at = ARENA.position + Vector2(x * 32 + 16, y * 32 + 16)
-			var blocked = false
+			var blocked = not ForestMaps.walkable(terrain, at, 29)
 			for structure in structures:
 				blocked = blocked or structure.grow(24).has_point(at)
 			for obstacle in obstacles:
@@ -630,7 +749,7 @@ func _rebuild_navigation() -> void:
 
 func _navigation_direction(enemy: Dictionary) -> Vector2:
 	var direct: Vector2 = player - enemy.pos
-	var blocked = false
+	var blocked = not _ground_line_clear(enemy.pos, player, _enemy_radius(enemy))
 	for structure in structures:
 		blocked = blocked or Geometry2D.segment_intersects_segment(enemy.pos, player, structure.position, Vector2(structure.end.x, structure.position.y)) != null
 		blocked = blocked or Geometry2D.segment_intersects_segment(enemy.pos, player, structure.end, Vector2(structure.position.x, structure.end.y)) != null
@@ -648,7 +767,8 @@ func _navigation_direction(enemy: Dictionary) -> Vector2:
 	end.x = clampi(end.x, 0, 42)
 	end.y = clampi(end.y, 0, 25)
 	if navigation.is_point_solid(start) or navigation.is_point_solid(end):
-		return direct.normalized()
+		start = ForestMaps.cell_at(_nearest_navigation(enemy.pos))
+		end = ForestMaps.cell_at(_nearest_navigation(player))
 	if not enemy.has("path_time") or enemy.path_time < time:
 		enemy.path = navigation.get_point_path(start, end)
 		enemy.path_time = time + 0.35
@@ -657,6 +777,17 @@ func _navigation_direction(enemy: Dictionary) -> Vector2:
 		if point.distance_to(enemy.pos) > 26:
 			return (point - enemy.pos).normalized()
 	return direct.normalized()
+
+func _nearest_navigation(pos: Vector2) -> Vector2:
+	var nearest = pos
+	var distance = INF
+	for cell in terrain:
+		var candidate = ForestMaps.center(cell)
+		if not navigation.is_point_solid(cell) and candidate.distance_squared_to(pos) < distance:
+			nearest = candidate
+			distance = candidate.distance_squared_to(pos)
+	assert(distance < INF, "내비게이션에 연결된 땅이 없습니다.")
+	return nearest
 
 func _dash(movement: Vector2) -> void:
 	if elemental.movement(hero) == 0 or elemental.active(hero, "진창") or elemental.action_speed(hero) == 0:
@@ -670,34 +801,49 @@ func _dash(movement: Vector2) -> void:
 	dash_vector = movement.normalized() if movement.length() > 0.1 else last_move
 	dash_time = 0.17
 	pending_strike.clear()
+	hero["augment_knock_immune"] = false
+	queued_action = ""
+	queued_action_time = 0
 	attack_cd = minf(attack_cd, 0.05)
 	recoil = Vector2.ZERO
 	invulnerable = maxf(invulnerable, 0.25)
 	sound.play_tone("dash")
+	deity.dash_start()
 
 func _attack(heavy: bool) -> void:
+	_begin_action("skill" if heavy else "light")
+
+func _begin_action(action: String) -> void:
 	if elemental.action_speed(hero) <= 0:
 		return
 	if not pending_strike.is_empty():
+		if action != "light":
+			queued_action = action
+			queued_action_time = 0.2
 		return
-	if heavy and skill_cd > 0:
+	if action == "skill" and skill_cd > 0:
 		return
-	if not heavy and attack_cd > 0:
+	if action == "heavy" and heavy_cd > 0:
 		return
-	if heavy:
-		skill_cd = skill_duration
-		if _tier("생존") >= 3:
-			elemental.grant_shield(hero, 24 if _tier("생존") == 4 else 12, 3)
+	if action == "light" and attack_cd > 0:
+		return
+	if action == "skill":
+		skill_cd = skill_duration * deity.skill_cooldown_factor()
 		sound.play_tone("skill")
+	elif action == "heavy":
+		heavy_cd = 0.85
+		attack_cd = maxf(attack_cd, 0.38)
+		sound.play_tone("finisher")
 	else:
 		combo = combo % 3 + 1
 		combo_timer = 0.85
-		attack_cd = attack_interval * (1.15 if combo == 3 else 1.0)
+		attack_cd = attack_interval / deity.attack_speed() * (1.15 if combo == 3 else 1.0)
 		sound.play_tone("slash")
 	attack_buffer = 0
-	dash_attack = dash_time > 0 and not heavy
-	pending_strike = {"timer": 0.07 if heavy else 0.045, "heavy": heavy, "direction": facing, "dash": dash_attack}
-	if not heavy and not dash_attack:
+	dash_attack = dash_time > 0 and action == "light"
+	pending_strike = {"timer": {"light": 0.045, "heavy": 0.30, "skill": 0.12}[action], "action": action, "direction": facing, "dash": dash_attack}
+	hero["augment_knock_immune"] = action == "heavy" and deity.has("E10")
+	if action == "light" and not dash_attack:
 		recoil = facing * (120 if combo == 3 else 65)
 
 func _tick_strike(delta: float) -> void:
@@ -708,46 +854,47 @@ func _tick_strike(delta: float) -> void:
 		return
 	var strike: Dictionary = pending_strike.duplicate()
 	pending_strike.clear()
-	_resolve_strike(strike.heavy, strike.direction, strike.dash)
+	hero["augment_knock_immune"] = false
+	_resolve_action(strike.action, strike.direction, strike.dash)
 
 func _resolve_strike(heavy: bool, direction: Vector2, rushing: bool) -> void:
-	slash_time = 0.30 if heavy else 0.21
+	_resolve_action("skill" if heavy else "light", direction, rushing)
+
+func _resolve_action(action: String, direction: Vector2, rushing: bool) -> void:
+	var heavy = action != "light"
+	slash_time = 0.34 if heavy else 0.21
 	slash_origin = player
 	slash_angle = direction.angle()
 	slash_heavy = heavy
-	var radius = _skill_radius() if heavy else attack_range + (22 if rushing else 0)
+	slash_action = action
+	var radius = 136.0 if action == "skill" else ((116.0 * (1 + deity.value("A02", 0.2))) if action == "heavy" else attack_range + (22 if rushing else 0))
 	var hits = 0
+	var context: Dictionary = deity.begin_action(action)
 	for enemy in enemies:
 		if enemy.hp <= 0:
 			continue
 		var diff: Vector2 = enemy.pos - player
 		if diff.length() > radius + _enemy_radius(enemy):
 			continue
-		if not heavy and diff.length() > 20 and direction.dot(diff.normalized()) < 0.05:
+		if action != "skill" and diff.length() > 20 and direction.dot(diff.normalized()) < (0.45 if action == "heavy" else 0.05):
 			continue
-		var damage = _attack_damage(heavy) * (1.0 if heavy else (1.6 if combo == 3 else 1.0)) * (1.25 if rushing else 1.0)
-		var critical = rng.randf() < crit_chance
-		if critical:
-			damage *= 2
-		_element_hit(hero, enemy, damage, hero.element, critical)
-		elemental.knock(enemy, diff, 320.0 if heavy or combo == 3 else 180.0)
+		if action != "skill" and not _ground_line_clear(player, enemy.pos):
+			continue
+		var damage = attack_power * {"light": 1.0, "heavy": 2.0, "skill": 2.4}[action] * (1.6 if action == "light" and combo == 3 else 1.0) * (1.25 if rushing else 1.0)
+		deity.direct(enemy, action, damage, context, hits == 0)
+		if not enemy.cc_immune:
+			elemental.knock(enemy, diff, 320.0 if heavy or combo == 3 else 180.0)
+		deity.knock_hit(enemy, action)
 		enemy.stagger = 0.18 if enemy.kind != "boss" else 0.0
 		enemy.wall_hit = false
-		if not heavy and _tier("물리공격") == 4:
-			_hit_enemy(enemy, damage * 0.35)
 		hits += 1
+	deity.end_action(action, context, hits)
 	if heavy:
 		_emit(player, GOLD, 34, 260)
 		shake = 5
-		if _tier(element_lock) >= 3:
-			_element_burst(radius + 55, _attack_damage(true) * 0.35)
-		if _tier("기술") == 4 or _tier("속성공격") == 4:
-			second_burst = {"timer": 0.24, "radius": radius, "damage": _attack_damage(true) * 0.6}
-	elif _tier("공격속도") == 4 or (_tier("공격속도") >= 3 and combo == 3):
-		_element_burst(attack_range + 35, _attack_damage(false) * 0.3)
 	for prop in breakables:
 		var diff: Vector2 = prop.pos - player
-		if prop.hp > 0 and diff.length() < radius + 14 and (heavy or direction.dot(diff.normalized()) > 0.05):
+		if prop.hp > 0 and diff.length() < radius + 14 and (heavy or direction.dot(diff.normalized()) > 0.05) and (action == "skill" or _ground_line_clear(player, prop.pos)):
 			prop.hp = 0
 			gold += 3
 			_emit(prop.pos, GOLD, 12, 110)
@@ -771,21 +918,18 @@ func _hit_enemy(enemy: Dictionary, damage: float, critical: bool = false) -> voi
 func _units() -> Array:
 	hero.hp = hp
 	hero.pos = player
+	hero.max_hp = max_hp
 	return [hero] + enemies
 
 func _heal(amount: float) -> void:
-	hp = minf(max_hp, hp + amount * elemental.heal_factor(hero) * (1.2 if _tier("생존") >= 2 else 1.0))
+	hp = minf(max_hp, hp + amount * elemental.heal_factor(hero) * deity.heal_factor())
 	hero.hp = hp
 
 func _attack_damage(heavy: bool) -> float:
-	var physical = 0.0 if heavy else 0.15 * flat_bonuses.get("물리공격", 0) + 0.1 * mini(_tier("물리공격"), 2)
-	var elemental_bonus = 0.15 * flat_bonuses.get("속성공격", 0) + 0.1 * mini(_tier("속성공격"), 2)
-	elemental_bonus += 0.12 * mini(_tier(element_lock), 2)
-	var skill = 0.16 * flat_bonuses.get("기술", 0) + (0.15 if _tier("기술") >= 2 else 0) + (0.25 if _tier("속성공격") >= 3 else 0)
-	return attack_power * (2.4 if heavy else 1.0) * (1 + physical + elemental_bonus + (skill if heavy else 0))
+	return attack_power * (2.4 if heavy else 1.0)
 
 func _skill_radius() -> float:
-	return 136.0 + (30 if _tier("기술") >= 3 else 0) + (90 if _tier(element_lock) == 4 else 0)
+	return 136.0
 
 func _element_burst(radius: float, damage: float) -> void:
 	impacts.append({"pos": player, "life": 0.3, "kind": "element", "radius": radius, "element": hero.element})
@@ -820,7 +964,12 @@ func _apply_element_events(events: Array) -> void:
 func _incoming(attacker: Dictionary, damage: float) -> void:
 	if invulnerable > 0 or state != "playing":
 		return
+	deity.source_enemy = attacker
+	if deity.incoming_dodge():
+		_float_text(player, "회피", MINT)
+		return
 	_element_hit(attacker, hero, damage, attacker.element)
+	deity.source_enemy = {}
 	invulnerable = 0.75
 
 func _element_color(element: String) -> Color:
@@ -829,8 +978,10 @@ func _element_color(element: String) -> Color:
 func _hurt(damage: float, periodic: bool = false) -> void:
 	if (invulnerable > 0 and not periodic) or state != "playing":
 		return
-	damage *= 0.92 if _tier("생존") >= 1 else 1.0
+	damage *= deity.incoming_factor()
+	deity.before_hurt(damage)
 	damage = elemental.absorb(hero, damage)
+	deity.after_shield_damage(damage)
 	hp = maxf(0, hp - damage)
 	hero.hp = hp
 	if not periodic:
@@ -840,7 +991,8 @@ func _hurt(damage: float, periodic: bool = false) -> void:
 	_emit(player, RED, 12, 130)
 	sound.play_tone("hurt")
 	if hp <= 0:
-		_finish_run(false)
+		if not deity.revive():
+			_finish_run(false)
 
 func _use_flask() -> void:
 	if flasks <= 0:
@@ -864,8 +1016,9 @@ func _tick_enemies(delta: float) -> void:
 			return
 		if enemy.hp <= 0:
 			continue
+		enemy.moving = false
 		enemy.flash = maxf(0, enemy.flash - delta)
-		var action_speed: float = elemental.action_speed(enemy)
+		var action_speed: float = elemental.action_speed(enemy) * deity.enemy_attack_speed(enemy)
 		enemy.cooldown -= delta * action_speed
 		enemy.stagger = maxf(0, enemy.stagger - delta)
 		if enemy.knock.length() > 2:
@@ -874,13 +1027,16 @@ func _tick_enemies(delta: float) -> void:
 			if desired.distance_to(enemy.pos) > 3 and enemy.knock.length() > 130 and not enemy.wall_hit:
 				enemy.wall_hit = true
 				_hit_enemy(enemy, 10)
+				deity.wall_hit(enemy)
 				_float_text(enemy.pos + Vector2(0, -44), "벽 충돌", GOLD)
 				shake = 4
 			enemy.knock = enemy.knock.move_toward(Vector2.ZERO, delta * 650)
 		if enemy.hp <= 0 or enemy.stagger > 0 or action_speed == 0:
 			continue
 		if enemy.kind == "boss":
+			var before: Vector2 = enemy.pos
 			_tick_boss(enemy, delta * action_speed)
+			enemy.moving = enemy.pos.distance_squared_to(before) > 0.01
 			continue
 		var diff: Vector2 = player - enemy.pos
 		var distance = diff.length()
@@ -909,20 +1065,23 @@ func _tick_enemies(delta: float) -> void:
 			var away: Vector2 = enemy.pos - other.pos
 			if away.length() < _enemy_radius(enemy) + _enemy_radius(other) + 5 and away.length() > 0.01:
 				velocity += away.normalized() * 65
-		enemy.pos = _move_actor(enemy.pos, velocity * delta * elemental.movement(enemy), _enemy_radius(enemy))
+		var before: Vector2 = enemy.pos
+		enemy.pos = _move_actor(enemy.pos, velocity * delta * elemental.movement(enemy) * deity.enemy_movement(enemy), _enemy_radius(enemy))
+		enemy.moving = enemy.pos.distance_squared_to(before) > 0.01
 
 func _resolve_enemy_attack(enemy: Dictionary) -> void:
+	enemy["attack_pose_until"] = time + 0.18
 	var direction: Vector2 = (enemy.target - enemy.pos).normalized()
 	enemy.cooldown = 1.65 if enemy.kind == "brute" else 1.15
 	if enemy.kind == "archer":
 		_shoot(enemy.pos, direction, 185, 13, enemy)
 	elif enemy.kind == "brute":
 		_emit(enemy.pos + direction * 35, RED, 12, 150)
-		if player.distance_to(enemy.pos + direction * 28) < 69:
+		if player.distance_to(enemy.pos + direction * 28) < 69 and _ground_line_clear(enemy.pos, player):
 			_incoming(enemy, 23)
 	else:
 		_emit(enemy.pos + direction * 20, RED, 5, 70)
-		if player.distance_to(enemy.pos) < 68 and direction.dot((player - enemy.pos).normalized()) > 0:
+		if player.distance_to(enemy.pos) < 68 and direction.dot((player - enemy.pos).normalized()) > 0 and _ground_line_clear(enemy.pos, player):
 			_incoming(enemy, 12)
 
 func _tick_boss(enemy: Dictionary, delta: float) -> void:
@@ -934,6 +1093,7 @@ func _tick_boss(enemy: Dictionary, delta: float) -> void:
 	if enemy.windup > 0:
 		enemy.windup -= delta
 		if enemy.windup <= 0:
+			enemy["attack_pose_until"] = time + 0.22
 			var attack_index: int = enemy.attack_index % 3
 			if attack_index == 0:
 				var count = 14 if enraged else 10
@@ -947,15 +1107,14 @@ func _tick_boss(enemy: Dictionary, delta: float) -> void:
 			else:
 				for i in (5 if enraged else 3):
 					var pos: Vector2 = player + Vector2(rng.randf_range(-120, 120), rng.randf_range(-70, 70))
-					pos.x = clampf(pos.x, ARENA.position.x + 55, ARENA.end.x - 55)
-					pos.y = clampf(pos.y, ARENA.position.y + 55, ARENA.end.y - 55)
+					pos = _nearest_floor(pos, 12)
 					hazards.append({"pos": pos, "timer": 0.95, "life": 1.25, "fired": false, "source": enemy})
 			enemy.attack_index += 1
 			enemy.cooldown = 0.75 if enraged else 1.2
 		return
 	var diff: Vector2 = player - enemy.pos
 	if diff.length() > 80:
-		enemy.pos = _move_actor(enemy.pos, _navigation_direction(enemy) * delta * elemental.movement(enemy) * (55 if enraged else 38), 29)
+		enemy.pos = _move_actor(enemy.pos, _navigation_direction(enemy) * delta * elemental.movement(enemy) * deity.enemy_movement(enemy) * (55 if enraged else 38), 29)
 	if diff.length() < 64:
 		_incoming(enemy, 22)
 	if enemy.cooldown <= 0:
@@ -970,9 +1129,10 @@ func _shoot(pos: Vector2, direction: Vector2, speed: float, damage: float, sourc
 func _tick_projectiles(delta: float) -> void:
 	for i in range(projectiles.size() - 1, -1, -1):
 		var projectile: Dictionary = projectiles[i]
+		var before: Vector2 = projectile.pos
 		projectile.pos += projectile.velocity * delta
 		projectile.life -= delta
-		var remove = projectile.life <= 0 or not ARENA.has_point(projectile.pos)
+		var remove = projectile.life <= 0 or not _projectile_line_clear(before, projectile.pos)
 		for obstacle in obstacles:
 			if projectile.pos.distance_to(obstacle) < 28:
 				remove = true
@@ -980,6 +1140,9 @@ func _tick_projectiles(delta: float) -> void:
 			if structure.has_point(projectile.pos):
 				remove = true
 		if not remove and projectile.pos.distance_to(player) < 16:
+			if deity.remove_projectile():
+				projectiles.remove_at(i)
+				continue
 			if projectile.source.is_empty():
 				_hurt(projectile.damage)
 			else:
@@ -990,6 +1153,20 @@ func _tick_projectiles(delta: float) -> void:
 		if remove:
 			_emit(projectile.pos, RED, 3, 60)
 			projectiles.remove_at(i)
+
+func _projectile_line_clear(start: Vector2, end: Vector2) -> bool:
+	var steps = maxi(1, ceili(start.distance_to(end) / 12))
+	for i in range(steps + 1):
+		var pos = start.lerp(end, i / float(steps))
+		if not terrain.has(ForestMaps.cell_at(pos)):
+			return false
+		for structure in structures:
+			if structure.has_point(pos):
+				return false
+		for tree in obstacles:
+			if tree.distance_to(pos) < 28:
+				return false
+	return true
 
 func _tick_hazards(delta: float) -> void:
 	for i in range(hazards.size() - 1, -1, -1):
@@ -1013,10 +1190,11 @@ func _collect_dead() -> void:
 		if enemy.hp > 0:
 			continue
 		killed_boss = killed_boss or enemy.kind == "boss"
+		deity.killed(enemy)
 		total_kills += 1
 		room_kills += 1
 		run_embers += 3 if enemy.elite else 2
-		gold += 5 if enemy.elite else 3
+		gold += roundi((5 if enemy.elite else 3) * deity.currency_factor())
 		_gain_experience(18 if enemy.elite else 12)
 		floor_marks.append({"pos": enemy.pos, "kind": enemy.kind})
 		_emit(enemy.pos, GOLD, 20, 180)
@@ -1024,12 +1202,14 @@ func _collect_dead() -> void:
 			pickups.append({"pos": enemy.pos + Vector2(rng.randf_range(-18, 18), rng.randf_range(-18, 18)), "age": 0.0})
 		enemies.remove_at(i)
 	if killed_boss:
+		deity.complete_room()
 		run_embers += 35
 		_finish_run(true)
 		return
 	if enemies.is_empty() and not room_clear and not reward_deferred and (room_type == "battle" or room_type == "elite") and state == "playing":
 		projectiles.clear()
 		hazards.clear()
+		deity.complete_room()
 		_offer_relics()
 
 func _tick_pickups(delta: float) -> void:
@@ -1049,7 +1229,7 @@ func _gain_experience(amount: int) -> void:
 	while experience >= _experience_needed():
 		experience -= _experience_needed()
 		level += 1
-		max_hp += 5
+		max_hp += 5 * (0.8 if deity.penalty("C08") else 1.0) * (1.2 if deity.reward_has("R06") else 1.0)
 		_heal(15)
 		attack_power += 2
 		_float_text(player + Vector2(0, -55), "LEVEL UP  %d" % level, GOLD)
@@ -1101,62 +1281,86 @@ func _interact() -> void:
 		_show_rest()
 	elif room_type == "shop" and player.distance_to(ALTAR) < 80:
 		_show_shop()
-	elif room_clear and player.distance_to(WEST_GATE) < 78:
-		_take_gate(0)
-	elif room_clear and player.distance_to(EAST_GATE) < 78:
-		_take_gate(1)
-	elif room_clear and player.distance_to(PORTAL) < 78:
-		_show_routes()
+	elif room_clear:
+		var gates = [PORTAL, WEST_GATE, EAST_GATE]
+		var nearest = 0
+		for i in range(1, gates.size()):
+			if player.distance_squared_to(gates[i]) < player.distance_squared_to(gates[nearest]):
+				nearest = i
+		if player.distance_to(gates[nearest]) >= 78:
+			_notify("열린 출구 가까이에서 E를 누르세요.")
+		elif nearest == 0:
+			_show_routes()
+		else:
+			_take_gate(nearest - 1)
 	else:
-		_notify("빛나는 제단이나 열린 북쪽 문 가까이에서 E를 누르세요.")
+		_notify("빛나는 제단이나 열린 출구 가까이에서 E를 누르세요.")
 
 func _offer_relics(refresh: bool = true) -> void:
 	state = "reward"
 	reward_deferred = false
 	pending_strike.clear()
+	queued_action = ""
+	queued_action_time = 0
+	attack_buffer = 0
 	if refresh:
-		var pool = Augments.eligible(augment_data, augments, element_lock)
-		var previous_ids = offered.map(func(item): return item.id)
-		var fresh = pool.filter(func(item): return item.id not in previous_ids)
-		if fresh.size() >= 3:
-			pool = fresh
-		_shuffle(pool)
-		assert(pool.size() >= 3, "증강 풀이 부족합니다.")
-		offered.clear()
-		for i in 3:
-			var item: Dictionary = pool[i].duplicate(true)
-			item.rarity = Augments.roll_rarity(rng)
-			offered.append(item)
+		offer_pity["rarity_boost"] = deity.reward_has("R08")
+		offered = Augments.offer(augment_data, augments, registered_deities, augment_levels, offer_pity, rng)
+	if offered.size() != 3:
+		push_error("증강 보상은 정확히 3개여야 합니다.")
+		_notify("증강 목록 오류: 보상을 다시 열어 주세요.")
+		reward_deferred = true
+		_resume_room()
+		return
 	reward_ranks.clear()
-	var lock_label = "첫 속성 증강을 고르면 자신의 속성이 결정됩니다." if element_lock.is_empty() else "현재 속성: " + element_lock + " / 해당 속성 증강만 등장"
-	var box = _new_panel("새벽의 증강", lock_label + "\n같은 태그 2 / 3 / 4 / 6개로 시너지. 보유 증강은 다시 나오지 않습니다.", 850)
+	reward_age = 0
+	reward_ready = false
+	reward_neutral_time = 0
+	reward_keys.clear()
+	reward_cards.clear()
+	var box = _new_panel("신격의 현현", "신앙 2: 가호 / 4: 권능 / 6: 신화. 공격별 속성을 조합하세요.", 850)
+	reward_hint = _add_label(box, "증강이 모습을 드러내는 중입니다. 공격 입력을 놓으세요.", 14, PAPER)
 	var row = HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
 	box.add_child(row)
 	for i in 3:
 		var item: Dictionary = offered[i]
+		var card = PanelContainer.new()
+		card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var card_style = StyleBoxFlat.new()
+		card_style.bg_color = Color("#102a2c")
+		card_style.border_color = Color(Augments.COLORS[item.rarity]).darkened(0.25)
+		card_style.set_border_width_all(1)
+		card_style.set_content_margin_all(12)
+		card.add_theme_stylebox_override("panel", card_style)
+		row.add_child(card)
 		var choices = VBoxContainer.new()
 		choices.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		choices.custom_minimum_size.x = 240
-		row.add_child(choices)
+		choices.custom_minimum_size.x = 222
+		card.add_child(choices)
 		var rank: int = item.rarity
 		reward_ranks.append(rank)
-		var tags = " / ".join(item.tags)
-		var progress = ""
-		for tag in item.tags:
-			var count: int = tag_counts.get(tag, 0)
-			var next = 6
-			for threshold in Augments.THRESHOLDS:
-				if count < threshold:
-					next = threshold
-					break
-			progress += "%s %d>%d  (다음 %d)\n" % [tag, count, count + 1, next]
+		reward_cards.append(card)
+		var progress = deity.preview(item)
 		_add_label(choices, Augments.RARITIES[rank], 20, Color(Augments.COLORS[rank]))
 		var effect = RarityEffect.new()
 		effect.rank = rank
+		effect.element = item.element
+		effect.assets = sanctuary_assets
 		effect.animate = effects_enabled
 		choices.add_child(effect)
-		var button = _add_button(choices, "[%d] %s\n\n%s\n\n%s\n\n%s" % [i + 1, item.name, Augments.description(item, rank), tags, progress.strip_edges()], _choose_relic.bind(i), 245)
+		var scroll = ScrollContainer.new()
+		scroll.follow_focus = true
+		scroll.focus_mode = Control.FOCUS_ALL
+		scroll.custom_minimum_size.y = 145
+		scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+		choices.add_child(scroll)
+		var content = VBoxContainer.new()
+		content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		scroll.add_child(content)
+		var next_level: int = item.get("level", 1)
+		_add_label(content, "%s · %s\n%s\n\n%s" % [item.element, {"light": "약공격", "heavy": "강공격", "skill": "Q 전투 스킬", "dash": "회피"}.get(Augments.slot(item), "보조 / 조합"), Augments.description(item, rank, next_level), progress], 14, PAPER)
+		var button = _add_button(choices, "[%d] %s%s" % [i + 1, item.name, "  성장" if item.get("upgrade", false) else ""], _choose_relic.bind(i), 52)
 		button.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 		button.add_theme_font_size_override("font_size", 14)
 		button.focus_entered.connect(sound.play_rarity.bind(rank))
@@ -1168,21 +1372,57 @@ func _offer_relics(refresh: bool = true) -> void:
 	reroll_button.disabled = rerolls <= 0
 	reroll_button.focus_mode = Control.FOCUS_NONE if reroll_button.disabled else Control.FOCUS_ALL
 	_finish_panel()
+	for button in buttons:
+		button.disabled = true
+		button.release_focus()
 	sound.play_rarity(reward_ranks.max())
 
+func _reward_input_held() -> bool:
+	if reward_keys.get(-MOUSE_BUTTON_LEFT, false) or reward_keys.get(-MOUSE_BUTTON_RIGHT, false):
+		return true
+	for action in ["slash", "heavy", "skill", "power", "ui_accept"]:
+		if Input.is_action_pressed(action):
+			return true
+	for key in [KEY_1, KEY_2, KEY_3, KEY_ENTER, KEY_KP_ENTER, KEY_SPACE, KEY_J, KEY_K, KEY_Q, KEY_R]:
+		if Input.is_physical_key_pressed(key) or reward_keys.get(key, false):
+			return true
+	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)
+
+func _tick_reward_intro(delta: float) -> void:
+	reward_age += delta
+	for i in reward_cards.size():
+		var card = reward_cards[i]
+		card.modulate.a = clampf((reward_age - 0.16 * i) / 0.42, 0, 1)
+	if reward_ready:
+		return
+	if reward_age < 1.0 or _reward_input_held():
+		reward_neutral_time = 0
+	else:
+		reward_neutral_time += minf(delta, maxf(0, reward_age - 1.0))
+	if reward_neutral_time < 0.25:
+		return
+	reward_ready = true
+	reward_hint.text = "선택 준비 완료. 새로 클릭하거나 1 / 2 / 3을 누르세요. Esc: 제단에 남기기"
+	for i in buttons.size():
+		buttons[i].disabled = i == buttons.size() - 1 and rerolls <= 0
+	_finish_panel()
+
 func _defer_reward() -> void:
+	if not reward_ready:
+		return
 	reward_deferred = true
 	_resume_room()
-	_notify("보상을 남겨 두었습니다. 중앙 제단에서 E를 누르면 다시 선택합니다.")
+	_notify("보상을 남겨 두었습니다. 빛나는 제단에서 E를 누르면 다시 선택합니다.")
 
 func _reroll_relics() -> void:
-	if state != "reward" or rerolls <= 0:
+	if state != "reward" or not reward_ready or rerolls <= 0:
 		return
 	rerolls -= 1
+	offer_pity["reroll"] = true
 	_offer_relics()
 
 func _choose_relic(index: int) -> void:
-	if state != "reward" or index < 0 or index >= offered.size():
+	if state != "reward" or not reward_ready or index < 0 or index >= offered.size():
 		return
 	var item: Dictionary = offered[index]
 	if not _apply_augment(item.id, item.rarity):
@@ -1204,29 +1444,40 @@ func _shuffle(items: Array) -> void:
 
 func _apply_augment(id: String, rarity: int) -> bool:
 	var matches = augment_data.filter(func(item): return item.id == id)
-	if matches.is_empty() or augments.has(id) or rarity < 0 or rarity > 5:
+	if matches.is_empty() or rarity < 0 or rarity >= Augments.RARITIES.size():
 		push_error("획득할 수 없는 증강: " + id)
 		_notify("증강 획득에 실패했습니다. 중복 및 데이터를 확인하세요.")
 		return false
 	var item: Dictionary = matches[0]
-	if not element_lock.is_empty() and not item.element.is_empty() and item.element != element_lock:
-		push_error("다른 속성 증강 획득 거부: " + id)
-		_notify("현재 속성과 다른 증강은 획득할 수 없습니다.")
+	var valid_rank = rarity <= 2 if item.kind == "normal" else rarity == (3 if item.kind == "legendary" else 4)
+	if not valid_rank:
+		push_error("증강 분류와 등급 불일치: " + id)
+		_notify("증강 등급 데이터가 일치하지 않습니다.")
 		return false
-	if element_lock.is_empty() and not item.element.is_empty():
-		element_lock = item.element
-		hero.element = element_lock
-	augments[id] = rarity
-	flat_bonuses[item.stat] = flat_bonuses.get(item.stat, 0.0) + Augments.POWER[rarity]
-	if item.stat == "생존":
-		max_hp += roundi(15 * Augments.POWER[rarity])
-		_heal(roundi(15 * Augments.POWER[rarity]))
+	var pool: Array = Augments.eligible(augment_data, augments, registered_deities, augment_levels)
+	if not pool.any(func(candidate): return candidate.id == id):
+		push_error("증강 선행 조건 또는 성장 제한: " + id)
+		_notify("증강 선행 조건을 충족하지 못했습니다.")
+		return false
+	if augments.has(id):
+		augment_levels[id] = augment_levels.get(id, 1) + 1
+		augment_xp[id] = 0
+	else:
+		var slot_name = Augments.slot(item)
+		if not slot_name.is_empty():
+			var old_id: String = core_slots.get(slot_name, "")
+			augments.erase(old_id)
+			augment_levels.erase(old_id)
+			augment_xp.erase(old_id)
+			core_slots[slot_name] = id
+		augments[id] = rarity
+		augment_levels[id] = 1
+		augment_xp[id] = 0
+		if id.left(1) in DeityCombat.CODES and id.length() == 3 and not item.element in registered_deities:
+			registered_deities.append(item.element)
 	tag_counts = Augments.counts(augment_data, augments)
-	attack_interval = maxf(0.10, 0.3 / (1 + 0.12 * flat_bonuses.get("공격속도", 0) + 0.1 * mini(_tier("공격속도"), 2)))
-	move_speed = 176 * (1 + 0.08 * flat_bonuses.get("이동속도", 0) + (0.08 if _tier("이동속도") >= 1 else 0))
-	dash_duration = maxf(0.35, 1 - 0.05 * flat_bonuses.get("이동속도", 0) - (0.15 if _tier("이동속도") >= 2 else 0))
-	skill_duration = maxf(1.0, 5.5 * (1 - 0.06 * flat_bonuses.get("기술", 0) - (0.1 if _tier("기술") >= 1 else 0)))
-	attack_range = 106 if _tier("물리공격") >= 3 else 86
+	active_augments = Augments.active(augment_data, augments)
+	deity.recompute()
 	return true
 
 func _tier(tag: String) -> int:
@@ -1310,7 +1561,7 @@ func _rest_choice(heal: bool) -> void:
 	room_clear = true
 	_resume_room()
 	sound.play_tone("reward")
-	_notify("제단의 축복을 받았습니다. 북쪽 문으로 이동하세요.")
+	_notify("제단의 축복을 받았습니다. 열린 출구로 이동하세요.")
 
 func _settle_run(won: bool) -> void:
 	if run_settled:
@@ -1340,8 +1591,9 @@ func _finish_run(won: bool) -> void:
 
 func _show_hub() -> void:
 	state = "hub"
-	player = ALTAR + Vector2(120, 120)
-	camera_position = ALTAR
+	_apply_layout(room_layout)
+	player = room_entry
+	camera_position = player
 	enemies.clear()
 	obstacles.clear()
 	structures.clear()
@@ -1369,6 +1621,7 @@ func _show_hub() -> void:
 	_add_button(box, "조작법과 탐험 안내", _show_help.bind("hub"), 44)
 	_add_button(box, "게임 종료", _quit_game, 44)
 	_add_button(box, "사운드 설정", _show_settings.bind("hub"), 44)
+	_add_button(box, "신격 도감", _show_codex.bind("hub"), 40)
 	if not save_error.is_empty():
 		_add_label(box, save_error, 14, RED)
 	if not sound.settings_error.is_empty():
@@ -1406,8 +1659,8 @@ func _show_help(return_to: String) -> void:
 	previous_state = return_to
 	state = "help"
 	var box = _new_panel("순례자의 수첩", "마우스 또는 키보드만으로 플레이할 수 있습니다.", 640)
-	_add_label(box, "이동   WASD / 방향키 (화면 기준)       조준   마우스\n베기   좌클릭 유지 / J       불씨 폭발   우클릭 / Q / K\n회피   Space (이동 방향, 무적)       회복약   F\n상호작용   E       일시정지   Esc       수첩   Tab\n음소거   M       조준 방식 변경   T", 18, PAPER)
-	_add_label(box, "I  증강·시너지 / G  탐험 지도 / V  화면 흔들림·섬광 전환\n회피는 2회 충전. 회피 공격 피해 +25%. Esc에서 소리 설정.\n증강은 중복 없이 획득. 같은 태그 2/3/4/6개로 시너지가 열립니다.\n첫 속성 선택 후 해당 속성 증강만 등장. 공용 증강은 속성 선택 전만 등장.\n적의 머리 위 속성이 반응 기준입니다. 자신의 속성도 반응합니다.\n네 번째 방은 휴식·보물·상인, 일곱 번째 방은 보스입니다.", 15, MUTED)
+	_add_label(box, "이동 WASD / 방향키 · 조준 마우스\n약공격 좌클릭 / J · 강공격 우클릭 / K · 전투 스킬 Q\n권능 R · 회피 Space · 회복 F · 상호작용 E\nEsc 설정 · I 증강 / 권능 장착 · G 지도 · Tab 안내\nM 음소거 · T 조준 방식 · V 섬광 / 흔들림", 18, PAPER)
+	_add_label(box, "핵심 증강은 약·강·Q·회피에 각각 1개, 다른 속성을 조합할 수 있습니다.\n보상 등장 1초 + 입력을 놓은 상태 0.25초 이후 새 입력으로 선택합니다.\n신앙 2종 가호, 4종 권능, 6종 신화. 전설·쌍신은 조건 달성 후 선택 획득.\nI에서 도감·휴면·교체 조건을 확인합니다. 계약은 열린 방에서만 선택합니다.\n현재는 숲 7방 데모입니다. 14~18개 수집 목표는 후속 스테이지 기준입니다.", 15, MUTED)
 	_add_button(box, "수첩 닫기", _close_help.bind(return_to), 46)
 	_finish_panel()
 
@@ -1437,8 +1690,10 @@ func _abandon_run() -> void:
 func _show_inventory(return_to: String = "playing") -> void:
 	state = "inventory"
 	build_return = return_to
-	var box = _new_panel("증강과 공명", "자신의 고유 속성: %s / 보유 증강 %d개 / 배치·중첩 없음" % [hero.element, augments.size()], 820)
+	var box = _new_panel("증강과 신앙", "고유 속성 무속성 · 공격별 속성은 독립 · 보유 %d개 · R 권능 %d/100" % [augments.size(), deity.gauge], 820)
 	var scroll = ScrollContainer.new()
+	scroll.follow_focus = true
+	scroll.focus_mode = Control.FOCUS_ALL
 	scroll.custom_minimum_size.y = 255
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	box.add_child(scroll)
@@ -1448,13 +1703,78 @@ func _show_inventory(return_to: String = "playing") -> void:
 	if augments.is_empty():
 		_add_label(content, "아직 선택한 증강이 없습니다. 첫 방의 적을 쓰러뜨리세요.", 17, PAPER)
 	for tag in tag_counts:
+		if tag_counts[tag] <= 0:
+			continue
 		_add_label(content, "%s  %d개 / 활성 단계 %d\n%s" % [tag, tag_counts[tag], _tier(tag), Augments.synergy_text(tag)], 14, GOLD if _tier(tag) > 0 else MUTED)
 	for item in augment_data:
 		if augments.has(item.id):
 			var rank: int = augments[item.id]
-			_add_label(content, "%s  [%s]  %s\n%s" % [item.name, Augments.RARITIES[rank], " / ".join(item.tags), Augments.description(item, rank)], 14, PAPER)
-	_add_button(box, "조작법 보기", _show_help.bind("pause"), 44)
+			_add_label(content, "%s [%s] Lv.%d (경험치 %d/100) %s\n%s" % [item.name, Augments.RARITIES[rank], augment_levels.get(item.id, 1), augment_xp.get(item.id, 0), "활성" if deity.has(item.id) else "휴면: 선행 조건 필요", Augments.description(item, rank, augment_levels.get(item.id, 1))], 14, PAPER if deity.has(item.id) else MUTED)
+	for code in DeityCombat.CODES:
+		if deity.faith(code, 4):
+			var power_button = _add_button(content, ("장착 중: " if deity.equipped == code else "권능 장착: ") + DeityCombat.ELEMENTS[DeityCombat.CODES.find(code)], _equip_power.bind(code), 44)
+			power_button.disabled = not room_clear
+	_add_button(box, "신격 도감 / 전설·쌍신 조건", _show_codex.bind("inventory"), 40)
+	_add_button(box, "시련 계약 (전투 3방)", _show_contracts, 40)
 	_add_button(box, "닫기  [Esc]", _close_build, 44)
+	_finish_panel()
+
+func _equip_power(code: String) -> void:
+	if not room_clear or not deity.faith(code, 4):
+		_notify("권능 교체는 전투를 마친 방에서만 가능합니다.")
+		return
+	deity.equipped = code
+	_show_inventory(build_return)
+
+func _show_codex(return_to: String = "hub") -> void:
+	state = "codex"
+	previous_state = return_to
+	var box = _new_panel("신격 도감", "신앙은 자동 해금. 일반·전설·쌍신은 보상에서 직접 선택합니다. 회색: 조건 미충족", 840)
+	var scroll = ScrollContainer.new()
+	scroll.follow_focus = true
+	scroll.focus_mode = Control.FOCUS_ALL
+	scroll.custom_minimum_size.y = 290
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+	var content = VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(content)
+	for element in Augments.ELEMENTS:
+		_add_label(content, element + " · " + Augments.synergy_text(element), 15, GOLD)
+	var eligible = Augments.eligible(augment_data, augments, [], augment_levels)
+	for item in augment_data:
+		var available = eligible.any(func(candidate): return candidate.id == item.id) or deity.has(item.id)
+		var progress: Dictionary = Augments.prerequisite_progress(augment_data, augments, item)
+		_add_label(content, "%s %s [%s]\n%s\n선행 %d/%d: %s" % [item.id, item.name, item.element, Augments.description(item, 0), progress.met, progress.total, item.get("requirements_text", "없음")], 14, PAPER if available else MUTED)
+	_add_button(box, "도감 닫기", _close_codex, 44)
+	_finish_panel()
+
+func _close_codex() -> void:
+	if previous_state == "hub":
+		_show_hub()
+	else:
+		_show_inventory(build_return)
+
+func _show_contracts() -> void:
+	state = "contracts"
+	var box = _new_panel("시련 계약", "최대 2개. 다음 전투방 3개 완료 시 시련을 해제하고 이번 런 보상을 받습니다.", 800)
+	var scroll = ScrollContainer.new()
+	scroll.follow_focus = true
+	scroll.focus_mode = Control.FOCUS_ALL
+	scroll.custom_minimum_size.y = 280
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	box.add_child(scroll)
+	var content = VBoxContainer.new()
+	content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(content)
+	for contract in deity.contracts:
+		_add_label(content, "%s 진행: %d방 남음" % [contract.id, contract.remaining], 16, GOLD)
+	for id in deity.rewards:
+		_add_label(content, "%s 완수: %s" % [id, DeityCombat.REWARD_TEXT[int(id.right(2)) - 1]], 14, PAPER)
+	for i in 10:
+		var button = _add_button(content, "%s · %s\n3방 후: %s" % [DeityCombat.CONTRACT_NAMES[i], DeityCombat.CONTRACT_TEXT[i], DeityCombat.REWARD_TEXT[i]], deity.accept_contract.bind(i), 58)
+		button.disabled = not room_clear or deity.contracts.size() >= 2 or deity.penalty("C%02d" % (i + 1)) or deity.reward_has("R%02d" % (i + 1))
+	_add_button(box, "증강 화면으로", _show_inventory.bind(build_return), 44)
 	_finish_panel()
 
 func _close_build() -> void:
@@ -1508,14 +1828,17 @@ func _close_settings() -> void:
 
 func _show_map() -> void:
 	state = "map"
-	var box = _new_panel("성소의 발자취", "탐험은 일곱 방으로 이어집니다. 물음표는 아직 선택하지 않은 길입니다.", 730)
+	var box = _new_panel("성소의 발자취", ForestMaps.NAMES[room_layout] + "  /  현재 방의 실제 지형", 790)
+	var chart = TerrainChart.new()
+	chart.game = self
+	box.add_child(chart)
+	_add_label(box, "흰색: 나   원: 제단   황동: 출구·다리   청록: 건널 수 없는 물", 13, PAPER)
 	var descriptions = ""
 	for i in 7:
 		var marker = "현재" if i == depth else ("완료" if i < depth else "미탐험")
 		var kind = visited[i] if i < visited.size() else ""
-		descriptions += "%02d   %s   %s\n" % [i + 1, marker, _kind_name(kind) if not kind.is_empty() else "?"]
-	_add_label(box, descriptions.strip_edges(), 19, PAPER)
-	_add_label(box, "현재 방의 형상과 남은 적은 우상단 미니맵에 표시됩니다.", 15, MUTED)
+		descriptions += "%d %s %s%s" % [i + 1, marker, _kind_name(kind) if not kind.is_empty() else "?", "\n" if i == 3 else "   "]
+	_add_label(box, descriptions.strip_edges(), 12, MUTED)
 	_add_button(box, "지도를 접고 탐험 계속", _resume_room, 46)
 	_finish_panel()
 
@@ -1543,15 +1866,18 @@ func _new_panel(title: String, subtitle: String, width: float) -> VBoxContainer:
 	var panel = PanelContainer.new()
 	panel.custom_minimum_size.x = width
 	var style = StyleBoxFlat.new()
-	style.bg_color = Color("#182d29")
-	style.border_color = Color("#b89a61")
-	style.set_border_width_all(2)
+	style.bg_color = Color("#0e2325")
+	style.border_color = Color("#a68e5e")
+	style.set_border_width_all(1)
+	style.shadow_color = Color(0.01, 0.04, 0.04, 0.65)
+	style.shadow_size = 10
 	style.content_margin_left = 28
 	style.content_margin_right = 28
 	style.content_margin_top = 16
 	style.content_margin_bottom = 16
 	panel.add_theme_stylebox_override("panel", style)
 	center.add_child(panel)
+	panel.add_child(SanctuaryFrame.new())
 	var box = VBoxContainer.new()
 	box.add_theme_constant_override("separation", 9)
 	panel.add_child(box)
@@ -1580,11 +1906,13 @@ func _add_button(box: VBoxContainer, text: String, action: Callable, height: flo
 	button.add_theme_color_override("font_color", PAPER)
 	button.add_theme_color_override("font_hover_color", GOLD)
 	button.add_theme_color_override("font_focus_color", GOLD)
-	button.add_theme_color_override("font_disabled_color", Color("#9aada5"))
+	button.add_theme_color_override("font_disabled_color", Color("#b2c8bd"))
 	for style_name in ["normal", "hover", "pressed", "focus", "disabled"]:
 		var style = StyleBoxFlat.new()
-		style.bg_color = Color("#30423b") if style_name != "hover" else Color("#485342")
-		style.border_color = GOLD if style_name == "focus" else Color("#8b7b6c")
+		style.bg_color = Color("#1c3837") if style_name != "hover" else Color("#274340")
+		if style_name == "pressed":
+			style.bg_color = Color("#122c2d")
+		style.border_color = GOLD if style_name == "focus" else Color("#71816a")
 		style.set_border_width_all(2 if style_name == "focus" else 1)
 		style.content_margin_left = 12
 		style.content_margin_right = 12
@@ -1598,6 +1926,12 @@ func _finish_panel() -> void:
 	for button in buttons:
 		if not button.disabled:
 			button.grab_focus()
+			var parent = button.get_parent()
+			while parent != null and parent != overlay:
+				if parent is ScrollContainer:
+					parent.ensure_control_visible.call_deferred(button)
+					break
+				parent = parent.get_parent()
 			break
 
 func _close_overlay() -> void:
@@ -1610,6 +1944,13 @@ func _close_overlay() -> void:
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion or event is InputEventMouseButton:
 		pointer_position = event.position
+	if state == "reward" and event is InputEventKey:
+		reward_keys[event.physical_keycode] = event.pressed
+	if state == "reward" and event is InputEventMouseButton:
+		reward_keys[-event.button_index] = event.pressed
+	if state == "reward" and not reward_ready and (event is InputEventKey or event is InputEventMouseButton):
+		reward_neutral_time = 0
+		get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -1621,6 +1962,10 @@ func _unhandled_input(event: InputEvent) -> void:
 					_resume_room()
 				elif state == "inventory":
 					_close_build()
+				elif state == "codex":
+					_close_codex()
+				elif state == "contracts":
+					_show_inventory(build_return)
 				elif state == "settings":
 					_close_settings()
 				elif state == "hub":
@@ -1685,7 +2030,7 @@ func _room_title() -> String:
 
 func _room_objective() -> String:
 	if reward_deferred:
-		return "중앙 제단에서 E: 남겨 둔 보상"
+		return "빛나는 제단에서 E: 남겨 둔 보상"
 	if room_clear:
 		return "미니맵의 출구 또는 경로판에서 E"
 	if room_type == "treasure":
@@ -1737,19 +2082,24 @@ func _billboard(pos: Vector2) -> void:
 
 func _build_forest_border() -> void:
 	forest_trees.clear()
-	for i in 22:
-		var x = ARENA.position.x - 45 + i * 68
-		var y = ARENA.position.y - 40 + i * 42
-		forest_trees.append(Vector2(x, ARENA.position.y - 45 - (i * 17) % 65))
-		forest_trees.append(Vector2(x, ARENA.end.y + 70 + (i * 31) % 45))
-		if i < 21:
-			forest_trees.append(Vector2(ARENA.position.x - 60 - (i * 19) % 45, y))
-			forest_trees.append(Vector2(ARENA.end.x + 65 + (i * 23) % 55, y))
+	boundary_props.clear()
+	for cell in forest_boundary:
+		var hash_value = absi(cell.x * 197 + cell.y * 83 + room_layout * 31)
+		var distance: int = forest_boundary[cell]
+		var pos = ForestMaps.center(cell)
+		if distance == 1:
+			boundary_props.append({"kind": "bush", "pos": pos, "variant": hash_value})
+		elif distance == 2 and hash_value % 6 == 0:
+			forest_trees.append(pos)
+		elif distance == 3 and hash_value % 8 == 0:
+			forest_trees.append(pos)
+		elif hash_value % 4 == 0:
+			boundary_props.append({"kind": "bush", "pos": pos, "variant": hash_value})
 
 func _draw() -> void:
 	if sprites.is_empty():
 		return
-	draw_rect(Rect2(0, 0, 960, 540), Color("#102b28"))
+	draw_rect(Rect2(0, 0, 960, 540), Color("#091d22"))
 	view_offset = Vector2(480, 300) - _project(camera_position)
 	if effects_enabled:
 		view_offset += Vector2(sin(time * 97), cos(time * 83)) * shake
@@ -1765,31 +2115,41 @@ func _draw() -> void:
 	_draw_hud()
 
 func _draw_room() -> void:
-	draw_rect(ARENA.grow(350), Color("#18382f"))
-	draw_rect(ARENA.grow(48), Color("#254436"))
-	draw_rect(ARENA, Color("#39543a"))
-	for y in 26:
-		for x in 43:
-			var pos = ARENA.position + Vector2(x * 32, y * 32)
-			if not Rect2(-70, -70, 1100, 680).has_point(_project(pos) + view_offset):
+	draw_set_transform(Vector2.ZERO)
+	var corners = [_screen_to_world(Vector2(-100, -160)), _screen_to_world(Vector2(1060, -160)), _screen_to_world(Vector2(1060, 700)), _screen_to_world(Vector2(-100, 700))]
+	var minimum = Vector2(INF, INF)
+	var maximum = Vector2(-INF, -INF)
+	for point in corners:
+		minimum = minimum.min(point)
+		maximum = maximum.max(point)
+	var start = ForestMaps.cell_at(minimum)
+	var end = ForestMaps.cell_at(maximum)
+	for y in range(start.y - 1, end.y + 2):
+		for x in range(start.x - 1, end.x + 2):
+			var cell = Vector2i(x, y)
+			var screen = _project(ForestMaps.center(cell)) + view_offset
+			if not Rect2(-60, -60, 1080, 660).has_point(screen) or terrain.has(cell):
 				continue
-			var hash_value = absi(x * 37 + y * 131 + room_seed)
-			var patch = Color("#3c583b") if hash_value % 3 else Color("#345138")
-			var patch_points = PackedVector2Array([pos + Vector2(2, 10), pos + Vector2(18, 1), pos + Vector2(33, 11), pos + Vector2(29, 27), pos + Vector2(10, 33)])
-			draw_colored_polygon(patch_points, patch)
-	for path in room_paths:
-		_draw_forest_path(PackedVector2Array(path))
-	for i in 150:
-		var p = Vector2(90 + (i * 137 + room_seed) % 1310, 175 + (i * 193) % 750)
-		var blade_color = Color("#7b9355") if i % 4 == 0 else Color("#547444")
-		for blade in 3:
-			var grass = p + Vector2(blade * 5, 0)
-			draw_line(grass, grass + Vector2(blade * 3 - 5, -6 - i % 8), blade_color, 2)
-		if i % 7 == 0:
-			draw_circle(p + Vector2(-3, -5), 3, Color("#c2bd7a"))
-			draw_circle(p + Vector2(3, -8), 2, Color("#e1d4a0"))
-		if i % 9 == 0:
-			draw_arc(p, 19, 0.2, 2.6, 7, Color("#263f31"), 4)
+			var variant = posmod(x * 37 + y * 131, 6) + 12 * posmod(x * 7 + y * 13, 4)
+			ReferenceArt.floor(self, reference_assets, screen, variant, false, false, time)
+			draw_colored_polygon(PackedVector2Array([screen + Vector2(-27.52, 0), screen + Vector2(0, -13.76), screen + Vector2(27.52, 0), screen + Vector2(0, 13.76)]), Color(0.015, 0.055, 0.045, 0.22))
+	var ordered: Array = terrain.keys()
+	ordered.sort_custom(func(a, b): return a.x + a.y < b.x + b.y)
+	draw_set_transform(Vector2.ZERO)
+	for cell in ordered:
+		var pos = ForestMaps.center(cell)
+		var screen = _project(pos) + view_offset
+		if not Rect2(-90, -70, 1140, 720).has_point(screen):
+			continue
+		var kind: String = terrain[cell]
+		var variant = posmod(cell.x * 37 + cell.y * 131, 6) + (6 if kind == "stone" else 0) + 12 * posmod(cell.x * 7 + cell.y * 13, 4)
+		ReferenceArt.floor(self, reference_assets, screen, variant, kind == "water", kind == "bridge", time)
+		if kind not in ["water", "bridge"]:
+			for direction in [Vector2i.RIGHT, Vector2i.DOWN, Vector2i.LEFT, Vector2i.UP]:
+				if terrain.get(cell + direction, "") == "water":
+					var bank = _project(pos + Vector2(direction) * 14) + view_offset
+					draw_line(bank - _project(Vector2(-direction.y, direction.x) * 14), bank + _project(Vector2(-direction.y, direction.x) * 14), Color("#719781"), 2)
+	_ground_transform()
 	for mark in floor_marks:
 		draw_ellipse_shadow(mark.pos, Vector2(18, 7))
 		for i in 5:
@@ -1856,41 +2216,16 @@ func _draw_tree(pos: Vector2, variant: int) -> void:
 		return
 	var diff = _project(player) - _project(pos)
 	var alpha = 0.28 if absf(diff.x) < 65 and diff.y < 12 and diff.y > -155 else 1.0
-	_billboard(pos)
-	var size_factor = 0.88 + posmod(variant, 5) * 0.06
-	draw_set_transform(at, 0, Vector2.ONE * size_factor)
-	ForestArt.tree(self, variant, alpha)
+	draw_set_transform(Vector2.ZERO)
+	ReferenceArt.prop(self, reference_assets, "tree", at, variant, alpha)
 	_ground_transform()
 
 func _draw_structure(rect: Rect2) -> void:
-	if rect.position.x == ARENA.position.x or rect.end.x == ARENA.end.x:
-		draw_rect(rect, Color("#203e30"))
-		for x in range(int(rect.position.x) + 25, int(rect.end.x), 65):
-			for y in range(int(rect.position.y) + 40, int(rect.end.y), 90):
-				_draw_tree(Vector2(x, y), x + y)
-		return
-	var corners = PackedVector2Array([
-		rect.position + Vector2(12, 0), Vector2(rect.end.x - 12, rect.position.y),
-		Vector2(rect.end.x, rect.position.y + 12), rect.end - Vector2(0, 12),
-		rect.end - Vector2(12, 0), Vector2(rect.position.x + 12, rect.end.y),
-		Vector2(rect.position.x, rect.end.y - 12), rect.position + Vector2(0, 12)])
-	var top = PackedVector2Array()
-	var base = PackedVector2Array()
-	for point in corners:
-		base.append(_project(point) + view_offset)
-		top.append(_project(point) + view_offset - Vector2(0, 32 + top.size() % 3 * 4))
+	for prop in room_decorations:
+		if prop.kind == "pillar" and prop.pos == rect.get_center():
+			return
 	draw_set_transform(Vector2.ZERO)
-	for i in 8:
-		var next = (i + 1) % 8
-		if absf(base[i].x - base[next].x) < 0.1:
-			continue
-		draw_colored_polygon(PackedVector2Array([top[i], base[i], base[next], top[next]]), Color("#3f5140") if i < 4 else Color("#2c4034"))
-	draw_colored_polygon(top, Color("#738365"))
-	draw_polyline(PackedVector2Array([top[7], top[0], top[1], top[2]]), Color("#b0ac7c"), 2)
-	var center = (_project(rect.get_center()) + view_offset) - Vector2(0, 35)
-	for i in 4:
-		draw_line(top[i * 2].lerp(center, 0.15), center + Vector2(i * 4 - 8, i % 2 * 4), Color("#4b5c43"), 2)
-	draw_colored_polygon(PackedVector2Array([top[5], top[6], top[7].lerp(center, 0.4), center, top[4].lerp(center, 0.5)]), Color("#577547"))
+	ReferenceArt.prop(self, reference_assets, "rock", _project(rect.get_center()) + view_offset)
 	_ground_transform()
 
 func _draw_breakable(prop: Dictionary) -> void:
@@ -1900,27 +2235,15 @@ func _draw_breakable(prop: Dictionary) -> void:
 			draw_line(Vector2(i * 6 - 10, i % 2 * 3), Vector2(i * 6 - 7, -5), Color("#977549"), 3)
 		_ground_transform()
 		return
-	ForestArt.ellipse(self, Vector2(3, 3), Vector2(19, 7), Color(0.03, 0.09, 0.07, 0.45))
-	if prop.kind == "crate":
-		ForestArt.polygon(self, [Vector2(-16, -23), Vector2(0, -31), Vector2(17, -23), Vector2(17, -1), Vector2(0, 7), Vector2(-16, -1)], Color("#4a3528"))
-		ForestArt.polygon(self, [Vector2(-14, -22), Vector2(0, -28), Vector2(14, -22), Vector2(0, -15)], Color("#b18e57"))
-		ForestArt.polygon(self, [Vector2(-14, -20), Vector2(-1, -13), Vector2(-1, 4), Vector2(-14, -3)], Color("#937044"))
-		ForestArt.polygon(self, [Vector2(1, -13), Vector2(14, -20), Vector2(14, -3), Vector2(1, 4)], Color("#6c5033"))
-		draw_line(Vector2(-12, -18), Vector2(-3, 0), Color("#d4ac68"), 2)
-		draw_line(Vector2(3, -1), Vector2(12, -17), Color("#b99156"), 2)
-	else:
-		ForestArt.polygon(self, [Vector2(-7, -30), Vector2(7, -30), Vector2(5, -24), Vector2(13, -16), Vector2(11, 0), Vector2(-8, 2), Vector2(-13, -14), Vector2(-5, -24)], Color("#a18e66"))
-		ForestArt.ellipse(self, Vector2(0, -30), Vector2(8, 3), Color("#ded0a0"))
-		draw_line(Vector2(-7, -18), Vector2(-5, -2), Color("#dfcc99"), 3)
+	draw_set_transform(Vector2.ZERO)
+	ReferenceArt.prop(self, reference_assets, "crate" if prop.kind == "crate" else "urn", _project(prop.pos) + view_offset)
 	_ground_transform()
 
 func _draw_gate(pos: Vector2, opened: bool) -> void:
 	draw_circle(pos, 30, Color("#7b7850") if opened else Color("#354c34"))
+	draw_set_transform(Vector2.ZERO)
+	ReferenceArt.prop(self, reference_assets, "gate", _project(pos) + view_offset)
 	_billboard(pos)
-	ForestArt.polygon(self, [Vector2(-32, 3), Vector2(-29, -48), Vector2(-20, -65), Vector2(-15, -41), Vector2(-21, -2)], Color("#64553a"))
-	ForestArt.polygon(self, [Vector2(21, 1), Vector2(16, -47), Vector2(24, -62), Vector2(33, -44), Vector2(34, 4)], Color("#4c4934"))
-	draw_polyline(PackedVector2Array([Vector2(-25, -40), Vector2(-10, -60), Vector2(11, -66), Vector2(26, -43)]), Color("#8b8350"), 7)
-	draw_line(Vector2(-22, -47), Vector2(-11, -57), Color("#b9ab72"), 2)
 	if opened:
 		for i in 4:
 			draw_circle(Vector2(-15 + i * 9, -fmod(time * 24 + i * 9, 50)), 2, GOLD)
@@ -1962,6 +2285,13 @@ func _draw_floor_emblem(center: Vector2) -> void:
 	draw_polyline(PackedVector2Array([center + Vector2(0, -38), center + Vector2(21, 2), center + Vector2(0, 37), center + Vector2(-21, 2), center + Vector2(0, -38)]), color, 3)
 
 func _draw_entities() -> void:
+	for area in deity.zones:
+		draw_circle(area.pos, area.radius, Color(_element_color(area.element), 0.12))
+		draw_arc(area.pos, area.radius, 0, TAU, 32, Color(_element_color(area.element), 0.65), 2)
+	for seed_item in deity.seeds:
+		draw_circle(seed_item.pos, 9, _element_color("풀"))
+	for job in deity.jobs:
+		draw_arc(job.pos, job.radius, 0, TAU, 24, Color(_element_color(job.element), 0.45), 2)
 	for zone in elemental.zones:
 		var color = _element_color("불" if zone.name == "용암" else "땅")
 		draw_circle(zone.pos, Elements.RADIUS, Color(color, 0.16))
@@ -1992,6 +2322,10 @@ func _draw_entities() -> void:
 		actors.append({"kind": "structure", "pos": rect.end, "rect": rect})
 	for prop in breakables:
 		actors.append({"kind": "prop", "pos": prop.pos, "data": prop})
+	for prop in room_decorations:
+		actors.append({"kind": "decoration", "pos": prop.pos, "data": prop})
+	for prop in boundary_props:
+		actors.append({"kind": "boundary", "pos": prop.pos, "data": prop})
 	actors.sort_custom(func(a, b): return _project(a.pos).y < _project(b.pos).y)
 	for actor in actors:
 		if actor.kind == "hero":
@@ -2004,6 +2338,18 @@ func _draw_entities() -> void:
 			_draw_structure(actor.rect)
 		elif actor.kind == "prop":
 			_draw_breakable(actor.data)
+		elif actor.kind == "decoration":
+			draw_set_transform(Vector2.ZERO)
+			ReferenceArt.prop(self, reference_assets, actor.data.kind, _project(actor.pos) + view_offset)
+			_ground_transform()
+		elif actor.kind == "boundary":
+			draw_set_transform(Vector2.ZERO)
+			var screen = _project(actor.pos) + view_offset
+			if Rect2(-100, -60, 1160, 780).has_point(screen):
+				var diff = _project(player) - _project(actor.pos)
+				var alpha = 0.4 if absf(diff.x) < 35 and diff.y < 8 and diff.y > -55 else 1.0
+				ReferenceArt.prop(self, reference_assets, actor.data.kind, screen, actor.data.variant, alpha)
+			_ground_transform()
 		else:
 			_draw_enemy(actor)
 	for projectile in projectiles:
@@ -2040,12 +2386,16 @@ func _draw_entities() -> void:
 		_ground_transform()
 
 func _draw_sprite(kind: String, pos: Vector2, scale_factor: float, tint: Color = Color.WHITE) -> void:
-	_billboard(pos)
+	draw_set_transform(Vector2.ZERO)
 	if kind in ["hero", "crawler", "archer", "brute", "boss"]:
-		ForestArt.character(self, kind, time * 5 + pos.x, _project(facing).normalized(), tint.r > 2, tint.a)
+		if kind == "hero":
+			ReferenceArt.hero(self, reference_assets, _project(pos) + view_offset, _project(facing).normalized(), 0, tint.r > 2, tint.a)
+		else:
+			SanctuaryArt.actor(self, sanctuary_assets, kind, _project(pos) + view_offset, _project(facing).normalized(), time * 5 + pos.x, tint.r > 2, tint.a)
 	elif kind == "chest":
-		ForestArt.chest(self, scale_factor / 3.0)
+		ReferenceArt.prop(self, reference_assets, "chest", _project(pos) + view_offset)
 	else:
+		_billboard(pos)
 		draw_texture_rect(sprites[kind], Rect2(-Vector2(8, 13) * scale_factor, Vector2(16, 16) * scale_factor), false, tint)
 	_ground_transform()
 
@@ -2060,42 +2410,35 @@ func _draw_player() -> void:
 	if invulnerable > 0 and int(time * 16) % 2:
 		tint = Color(1, 1, 1, 0.45)
 	var walking = Input.get_vector("move_left", "move_right", "move_up", "move_down").length() > 0.1 and state == "playing"
-	_billboard(player)
-	ForestArt.character(self, "hero", time * 14 if walking else 0.0, _project(facing).normalized(), false, tint.a)
-	var sword_direction = facing
-	if slash_time > 0:
-		var swing = 1.0 - slash_time / (0.30 if slash_heavy else 0.21)
-		sword_direction = Vector2.from_angle(slash_angle + lerpf(-1.25, 1.25, swing) * (1 if combo % 2 else -1))
-	elif not pending_strike.is_empty():
-		sword_direction = facing.rotated(-1.2)
-	sword_direction = _project(sword_direction).normalized()
-	var hand = sword_direction * 13 + Vector2(0, -26)
-	var blade = sword_direction * 36
-	draw_line(hand, hand + blade, PAPER, 5)
-	draw_line(hand - sword_direction * 3, hand + sword_direction * 3, GOLD, 7)
-	draw_line(hand - sword_direction * 9, hand - sword_direction * 3, Color("#a27047"), 4)
+	var action_frame = -1
+	if not pending_strike.is_empty():
+		action_frame = 0
+	elif slash_time > 0:
+		action_frame = 1 if slash_time > (0.17 if slash_heavy else 0.105) else 2
+	draw_set_transform(Vector2.ZERO)
+	ReferenceArt.hero(self, reference_assets, _project(player) + view_offset, _project(facing).normalized(), time * 14 if walking else 0.0, false, tint.a, action_frame)
 	_ground_transform()
 	if not mouse_aim:
 		draw_line(player + facing * 36, player + facing * 43, GOLD, 3)
 	if slash_time > 0:
 		var radius = 136.0 if slash_heavy else attack_range + (22 if dash_attack else 0)
-		var progress = 1.0 - slash_time / (0.30 if slash_heavy else 0.21)
-		var color = GOLD if slash_heavy or combo == 3 else PAPER
-		if slash_heavy:
+		var progress = 1.0 - slash_time / (0.34 if slash_heavy else 0.21)
+		var color = _element_color(deity.element_for(slash_action))
+		if slash_action == "skill":
 			draw_arc(slash_origin, radius * (0.35 + progress * 0.65), 0, TAU, 48, Color(GOLD, 1 - progress), 8 * (1 - progress) + 1)
 			for i in 8:
 				var dir = Vector2.from_angle(i * TAU / 8)
 				draw_line(slash_origin + dir * radius * progress * 0.6, slash_origin + dir * radius * progress, Color(PAPER, 1 - progress), 3)
 		else:
 			var arc_points = PackedVector2Array()
-			var start = slash_angle - 1.35
-			var end = slash_angle + 1.35
+			var start = slash_angle - (0.95 if slash_heavy else 1.35)
+			var end = slash_angle + (0.95 if slash_heavy else 1.35)
 			for i in 25:
 				var t = i / 24.0
 				arc_points.append(slash_origin + Vector2.from_angle(lerpf(start, end, t)) * radius * (0.78 + progress * 0.22))
 			for i in range(23, 0, -1):
 				var t = i / 24.0
-				var inner = radius * (0.78 + progress * 0.22) - sin(t * PI) * maxf(2, 19 * (1 - progress))
+				var inner = radius * (0.78 + progress * 0.22) - sin(t * PI) * maxf(2, (30 if slash_heavy else 19) * (1 - progress))
 				arc_points.append(slash_origin + Vector2.from_angle(lerpf(start, end, t)) * inner)
 			draw_colored_polygon(arc_points, Color(color, 1 - progress))
 			draw_arc(slash_origin, radius * 0.68, start + 0.2, end - 0.2, 24, Color(MINT, (1 - progress) * 0.7), 2)
@@ -2111,9 +2454,15 @@ func _draw_enemy(enemy: Dictionary) -> void:
 			draw_arc(enemy.pos, 55 + sin(time * 15) * 4, 0, TAU, 32, RED, 3)
 		else:
 			draw_arc(enemy.pos, 60 if enemy.kind == "brute" else 46, aim.angle() - 1.0, aim.angle() + 1.0, 20, RED, 4)
-	_billboard(enemy.pos)
 	var aim_direction: Vector2 = (player - enemy.pos).normalized()
-	ForestArt.character(self, enemy.kind, time * 9 + enemy.pos.x, _project(aim_direction).normalized(), enemy.flash > 0)
+	var action_frame = -1
+	if enemy.windup > 0:
+		action_frame = 0 if enemy.windup > 0.2 else 1
+	elif enemy.get("attack_pose_until", 0) > time:
+		action_frame = 2
+	draw_set_transform(Vector2.ZERO)
+	SanctuaryArt.actor(self, sanctuary_assets, enemy.kind, _project(enemy.pos) + view_offset, _project(aim_direction).normalized(), time * 9 + enemy.pos.x if enemy.get("moving", false) else 0.0, enemy.flash > 0, 1.0, action_frame)
+	_billboard(enemy.pos)
 	if enemy.elite:
 		draw_arc(Vector2(0, -46), 26, PI, TAU, 16, GOLD, 2)
 	if not enemy.status.is_empty():
@@ -2124,6 +2473,12 @@ func _draw_enemy(enemy: Dictionary) -> void:
 			if label not in status_names:
 				status_names.append(label)
 		_actor_label(Vector2(0, 19), " / ".join(status_names), 11, PAPER)
+	if not deity.statuses(enemy).is_empty():
+		var labels: Array = []
+		var display_names = {"rupture": "파열", "burn": "화상", "chill": "냉기", "wave": "물결", "crack": "균열", "spore": "포자", "pressure": "풍압", "charge": "전하", "void": "공허", "order": "질서"}
+		for key in deity.statuses(enemy):
+			labels.append("%s%d" % [display_names[key], deity.stacks(enemy, key)])
+		_actor_label(Vector2(0, 34), " ".join(labels), 11, PAPER)
 	if elemental.active(enemy, "빙결"):
 		draw_arc(Vector2(0, -20), 28, 0, TAU, 6, _element_color("얼음"), 4)
 	elif elemental.active(enemy, "생장"):
@@ -2141,48 +2496,64 @@ func _actor_label(pos: Vector2, label: String, size: int, color: Color) -> void:
 	_text(pos, label, size, color, true)
 
 func _draw_hud() -> void:
-	_hud_panel(Rect2(14, 449, 245, 77))
-	draw_set_transform(Vector2(37, 499), 0, Vector2(0.65, 0.65))
-	ForestArt.character(self, "hero", 0, Vector2.RIGHT)
-	draw_set_transform(Vector2.ZERO)
-	_bar(Rect2(60, 459, 182, 17), hp / max_hp, Color("#9f453f"))
-	_text(Vector2(151, 472), "%d / %d" % [ceili(hp), int(max_hp)], 12, PAPER, true)
-	_bar(Rect2(60, 480, 182, 4), float(experience) / _experience_needed(), Color("#5c9c99"))
-	_text(Vector2(60, 500), "Lv.%d   EXP %d / %d" % [level, experience, _experience_needed()], 11, PAPER)
-	for i in 2:
-		draw_rect(Rect2(27 + i * 20, 510, 14, 5), MINT if i < dash_charges else Color("#4c565d"))
-	_text(Vector2(73, 519), "회피 %d/2  /  " % dash_charges + ("마우스 조준" if mouse_aim else "이동 조준"), 11, MUTED)
-	_hud_panel(Rect2(14, 14, 224, 49))
-	_text(Vector2(27, 35), "I  새벽의 숲", 19, GOLD)
-	_text(Vector2(27, 53), ForestMaps.NAMES[room_layout], 11, MUTED)
-	_hud_panel(Rect2(335, 14, 290, 53))
-	_text(Vector2(480, 36), _room_title(), 17, PAPER, true)
-	_text(Vector2(480, 56), _room_objective(), 12, MINT, true)
+	_hud_panel(Rect2(22, 466, 302, 58))
+	_ornate_bar(Rect2(37, 479, 196, 13), hp / max_hp, Color("#a14846"))
+	_text(Vector2(244, 490), "%d / %d" % [ceili(hp), int(max_hp)], 12, PAPER)
+	_bar(Rect2(37, 498, 196, 4), float(experience) / _experience_needed(), MINT)
+	_text(Vector2(244, 503), "Lv.%d" % level, 11, GOLD)
+	for i in deity.max_dashes():
+		draw_line(Vector2(38 + i * 17, 514), Vector2(48 + i * 17, 514), MINT if i < dash_charges else MUTED.darkened(0.6), 3)
+	_text(Vector2(100, 518), "Space 회피     F 회복약 %d" % flasks, 11, PAPER)
+	_hud_panel(Rect2(20, 16, 214, 48))
+	_text(Vector2(32, 37), "새벽의 숲", 19, GOLD)
+	_text(Vector2(32, 55), ForestMaps.NAMES[room_layout], 11, MUTED)
+	_hud_panel(Rect2(350, 15, 260, 47))
+	_text(Vector2(480, 35), _room_title(), 16, PAPER, true)
+	_text(Vector2(480, 54), _room_objective(), 11, MINT, true)
 	_draw_minimap()
-	_hud_panel(Rect2(271, 468, 442, 58))
-	_ability(281, "J / 클릭", "베기", attack_cd, attack_interval * 1.15, 0)
-	_ability(385, "Q / 우클릭", "불씨", skill_cd, skill_duration, 1)
-	_ability(501, "Space", "회피", dash_cd if dash_charges == 0 else 0, dash_duration, 2)
-	_ability(609, "F x%d" % flasks, "회복약", 0, 1, 3)
-	_hud_panel(Rect2(14, 74, 172, 40))
-	_text(Vector2(24, 91), "속성: " + hero.element, 13, _element_color(hero.element))
-	_text(Vector2(24, 107), "증강 %d개 / I 상세" % augments.size(), 11, PAPER)
+	var rail = [
+		["light", "좌클릭", attack_cd, attack_interval * 1.15],
+		["heavy", "우클릭", heavy_cd, 0.85],
+		["skill", "Q", skill_cd, skill_duration],
+		["dash", "Space", dash_cd if dash_charges == 0 else 0, dash_duration]]
+	for i in rail.size():
+		var pos = Vector2(43 + (i % 2) * 18, 159 + i * 57)
+		var element: String = deity.element_for(rail[i][0])
+		_draw_seal(pos, element, rail[i][2], rail[i][3])
+		draw_rect(Rect2(pos + Vector2(26, -17), Vector2(65, 37)), Color("#0c2226"))
+		_text(pos + Vector2(29, -2), rail[i][1], 11, PAPER)
+		_text(pos + Vector2(29, 13), element, 10, MUTED)
+	_hud_panel(Rect2(21, 385, 127, 35))
+	_text(Vector2(32, 401), "증강 %d   I 상세" % augments.size(), 12, PAPER)
+	_text(Vector2(32, 415), "신격 %d / 4" % registered_deities.size(), 10, MUTED)
+	_hud_panel(Rect2(392, 478, 242, 45))
+	var power_element: String = deity.ELEMENTS[deity.CODES.find(deity.equipped)] if not deity.equipped.is_empty() else "무속성"
+	_draw_seal(Vector2(418, 500), power_element, 0, 1, 17)
+	_text(Vector2(445, 496), "R  " + (power_element if not deity.equipped.is_empty() else "신앙 4: 권능 해금"), 12, PAPER)
+	_bar(Rect2(445, 503, 171, 4), deity.gauge / 100.0, GOLD)
+	_text(Vector2(617, 518), "%d / 100" % deity.gauge, 10, GOLD, true)
 	if hero.shield > 0 and hero.shield_until > elemental.clock:
-		_text(Vector2(60, 447), "보호막 %d" % hero.shield, 12, MINT)
-	var status_y = 133
+		_actor_label(Vector2(113, 457), "보호막 %d" % hero.shield, 12, MINT)
+	var status_y = 91
 	for status_name in hero.status:
 		var display: String = hero.status[status_name].get("name", status_name)
 		_hud_panel(Rect2(14, status_y - 14, 172, 20))
 		_text(Vector2(24, status_y), display, 12, RED)
 		status_y += 22
-	_hud_panel(Rect2(738, 464, 208, 62))
-	_text(Vector2(750, 486), "금화 %d   불씨 %d" % [gold, run_embers], 14, GOLD)
-	_text(Vector2(750, 505), "I 증강  G 지도  Esc 설정", 12, PAPER)
-	_text(Vector2(750, 521), "E 상호작용   %s" % _clock(run_time), 11, MUTED)
+	_hud_panel(Rect2(818, 359, 123, 108))
+	for i in 3:
+		var pos = Vector2(837, 380 + i * 29)
+		draw_circle(pos - Vector2(0, 4), 6, [GOLD, RED, MINT][i].darkened(0.6))
+		draw_arc(pos - Vector2(0, 4), 6, 0, TAU, 12, [GOLD, RED, MINT][i], 1)
+		_text(pos + Vector2(14, 0), ["금화 %d" % gold, "불씨 %d" % run_embers, "회복약 %d" % flasks][i], 12, PAPER)
+	_hud_panel(Rect2(752, 480, 189, 43))
+	_text(Vector2(763, 497), "E 상호작용  G 지도", 11, PAPER)
+	_text(Vector2(763, 514), "Esc 설정     %s" % _clock(run_time), 11, MUTED)
 	if toast_time > 0:
 		var text_width = font.get_string_size(toast, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
-		_hud_panel(Rect2(480 - text_width / 2 - 16, 410, text_width + 32, 30))
-		_text(Vector2(480, 431), toast, 16, GOLD, true)
+		text_width = minf(text_width, 540)
+		_hud_panel(Rect2(480 - text_width / 2 - 16, 425, text_width + 32, 29))
+		_text(Vector2(480, 445), toast, 14, GOLD, true)
 	for enemy in enemies:
 		if enemy.kind == "boss":
 			_hud_panel(Rect2(280, 75, 400, 42))
@@ -2190,20 +2561,45 @@ func _draw_hud() -> void:
 			_text(Vector2(480, 92), "가시 왕관의 수호자 [" + enemy.element + "]" + (" / 분노" if enemy.phase == 1 else ""), 13, PAPER, true)
 
 func _hud_panel(rect: Rect2) -> void:
-	draw_rect(rect, Color("#182d29"))
-	draw_rect(rect, Color("#a18858"), false, 1)
-	draw_line(rect.position + Vector2(8, 3), rect.position + Vector2(34, 3), GOLD, 2)
-	draw_line(rect.end - Vector2(34, 3), rect.end - Vector2(8, 3), GOLD, 2)
+	var p = rect.position
+	var e = rect.end
+	var shape = PackedVector2Array([p + Vector2(6, 0), Vector2(e.x - 6, p.y), Vector2(e.x, p.y + 6), e - Vector2(0, 6), e - Vector2(6, 0), Vector2(p.x + 6, e.y), Vector2(p.x, e.y - 6), p + Vector2(0, 6)])
+	draw_colored_polygon(shape, Color("#0c2226"))
+	draw_line(p + Vector2(8, 0), Vector2(e.x - 8, p.y), Color("#6b7962"), 1)
+	for at in [p + Vector2(3, 3), e - Vector2(3, 3)]:
+		draw_colored_polygon(PackedVector2Array([at + Vector2(-3, 0), at + Vector2(0, -3), at + Vector2(3, 0), at + Vector2(0, 3)]), GOLD)
+
+func _ornate_bar(rect: Rect2, fraction: float, color: Color) -> void:
+	draw_rect(rect.grow(3), Color("#9d8959"), false, 1)
+	_bar(rect, fraction, color)
+	draw_line(rect.position + Vector2(1, 2), rect.position + Vector2(rect.size.x * clampf(fraction, 0, 1) - 1, 2), color.lightened(0.3), 1)
+	for pos in [rect.position - Vector2(6, -rect.size.y / 2), rect.end + Vector2(6, -rect.size.y / 2)]:
+		draw_colored_polygon(PackedVector2Array([pos + Vector2(-4, 0), pos + Vector2(0, -7), pos + Vector2(4, 0), pos + Vector2(0, 7)]), GOLD)
+
+func _draw_seal(pos: Vector2, element: String, cooldown: float, full: float, radius: float = 23) -> void:
+	var diamond = PackedVector2Array([pos + Vector2(0, -radius), pos + Vector2(radius, 0), pos + Vector2(0, radius), pos + Vector2(-radius, 0), pos + Vector2(0, -radius)])
+	draw_colored_polygon(diamond.slice(0, 4), Color("#0b2126"))
+	draw_polyline(diamond, Color("#a68e5e"), 2)
+	SanctuaryArt.icon(self, sanctuary_assets, element, pos - Vector2.ONE * (radius - 6), (radius - 6) * 2)
+	if cooldown > 0:
+		draw_circle(pos, radius * 0.65, Color("#0b2126"))
+		_text(pos + Vector2(0, 4), "%.1f" % cooldown, 11, PAPER, true)
+		draw_arc(pos, radius * 0.74, -PI / 2, -PI / 2 + TAU * clampf(1 - cooldown / full, 0, 1), 24, GOLD, 2)
 
 func _draw_minimap() -> void:
 	var panel = Rect2(793, 14, 153, 124)
 	_hud_panel(panel)
 	var mini = Rect2(805, 25, 129, 79)
 	draw_rect(mini, Color("#151c27"))
-	var boundary = PackedVector2Array()
-	for corner in [ARENA.position, Vector2(ARENA.end.x, ARENA.position.y), ARENA.end, Vector2(ARENA.position.x, ARENA.end.y), ARENA.position]:
-		boundary.append(_minimap_position(corner, mini))
-	draw_polyline(boundary, Color("#8a9d73"), 2)
+	for cell in forest_boundary:
+		if forest_boundary[cell] == 1:
+			draw_circle(_minimap_position(ForestMaps.center(cell), mini), 1, Color("#274c3b"))
+	for cell in terrain:
+		var pos = ForestMaps.ORIGIN + Vector2(cell) * 32
+		var points = PackedVector2Array()
+		for corner in [pos, pos + Vector2(32, 0), pos + Vector2(32, 32), pos + Vector2(0, 32)]:
+			points.append(_minimap_position(corner, mini))
+		draw_colored_polygon(points, Color("#347d88") if terrain[cell] == "water" else (GOLD if terrain[cell] == "bridge" else Color("#4e7463")))
 	for obstacle in obstacles:
 		var at = _minimap_position(obstacle, mini)
 		draw_circle(at, 2, Color("#64835a"))
@@ -2227,7 +2623,7 @@ func _minimap_position(pos: Vector2, rect: Rect2) -> Vector2:
 	var scale_factor = minf((rect.size.x - 10) / ((ARENA.size.x + ARENA.size.y) * GROUND_X.x), (rect.size.y - 10) / ((ARENA.size.x + ARENA.size.y) * GROUND_X.y))
 	return rect.get_center() + _project(pos - ARENA.get_center()) * scale_factor
 
-func _ability(x: float, key: String, title: String, cooldown: float, full: float, icon: int) -> void:
+func _ability(x: float, key: String, title: String, cooldown: float, full: float, icon: int, gauge: bool = false) -> void:
 	var pos = Vector2(x, 480)
 	draw_rect(Rect2(pos, Vector2(34, 34)), Color("#244448"))
 	var color = GOLD if cooldown <= 0 else MUTED
@@ -2244,7 +2640,9 @@ func _ability(x: float, key: String, title: String, cooldown: float, full: float
 		3:
 			draw_rect(Rect2(pos + Vector2(10, 11), Vector2(15, 18)), MINT)
 			draw_rect(Rect2(pos + Vector2(14, 5), Vector2(7, 6)), GOLD)
-	if cooldown > 0:
+	if gauge:
+		_bar(Rect2(pos + Vector2(0, 30), Vector2(34, 4)), 1 - cooldown / full, GOLD)
+	elif cooldown > 0:
 		draw_rect(Rect2(pos.x, pos.y, 34, 34 * cooldown / full), Color(0.02, 0.08, 0.09, 0.65))
 		_text(pos + Vector2(17, 23), "%.1f" % cooldown, 13, PAPER, true)
 	_text(pos + Vector2(39, 11), key, 10, color)

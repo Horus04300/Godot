@@ -5,6 +5,9 @@ const Elements = preload("res://scripts/elements.gd")
 const Maps = preload("res://scripts/forest_maps.gd")
 
 static func click(game: Node, index: int) -> void:
+	if game.state == "reward" and not game.reward_ready:
+		game._tick_reward_intro(1.01)
+		game._tick_reward_intro(0.26)
 	await game.get_tree().process_frame
 	await game.get_tree().process_frame
 	var button: Button = game.buttons[index]
@@ -22,6 +25,9 @@ static func click(game: Node, index: int) -> void:
 	await game.get_tree().process_frame
 
 static func key(game: Node, physical_key: Key) -> void:
+	if game.state == "reward" and not game.reward_ready:
+		game._tick_reward_intro(1.01)
+		game._tick_reward_intro(0.26)
 	for pressed in [true, false]:
 		var event = InputEventKey.new()
 		event.physical_keycode = physical_key
@@ -78,7 +84,13 @@ static func run(game: Node) -> void:
 	assert(game.state == "inventory")
 	assert(game.overlay.find_children("*", "GridContainer", true, false).is_empty())
 	await click(game, 0)
-	assert(game.state == "help")
+	assert(game.state == "codex")
+	await key(game, KEY_ESCAPE)
+	assert(game.state == "inventory")
+	await click(game, 1)
+	assert(game.state == "contracts")
+	await key(game, KEY_ESCAPE)
+	assert(game.state == "inventory")
 	await key(game, KEY_ESCAPE)
 	assert(game.state == "pause")
 	await click(game, 0)
@@ -483,6 +495,7 @@ static func overhaul(game: Node) -> void:
 static func quarter_view(game: Node) -> void:
 	game._start_run()
 	game.set_process(false)
+	game._apply_layout(0)
 	game.player = game.ALTAR
 	game.structures.clear()
 	game.obstacles.clear()
@@ -595,9 +608,11 @@ static func combat_run(game: Node) -> void:
 			assert(game.state != "dead", "Autonomous combat died in room %d" % (room + 1))
 			assert(room_ticks < 7200, "Combat stalled in room %d" % (room + 1))
 			if game.state == "reward":
+				game._tick_reward_intro(1.01)
+				game._tick_reward_intro(0.26)
 				var selected = 0
 				for i in game.offered.size():
-					if game.offered[i].stat in ["물리공격", "생존", "기술"]:
+					if game.Augments.slot(game.offered[i]) in ["light", "heavy", "skill"]:
 						selected = i
 						break
 				game._choose_relic(selected)
