@@ -4,7 +4,7 @@ config_version=5
 config/name="불씨의 성소 : Ember Sanctuary"
 run/main_scene="res://main.tscn"
 config/features=PackedStringArray("4.3", "GL Compatibility")
-config/description="숲의 성소를 탐험하는 탑다운 로그라이트 액션 데모"
+config/description="다섯 숲 지형과 증강·시너지·원소 반응을 갖춘 쿼터뷰 액션 로그라이트 데모"
 
 [display]
 window/size/viewport_width=960
